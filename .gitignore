@@ -13,6 +13,9 @@ ManPages/
 catalog.json
 progress.json
 
+# App bundle (committed as zip release instead)
+Man Page Catalog.app/
+
 # IDE files
 .kiro/
 .vscode/
