@@ -1,0 +1,33 @@
+name: ManPageCatalog
+options:
+  bundleIdPrefix: com.local
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "15"
+
+targets:
+  ManPageCatalog:
+    type: application
+    platform: macOS
+    sources:
+      - path: ManPageCatalog
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.ManPageCatalog
+        PRODUCT_NAME: Man Page Catalog
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: NO
+    entitlements:
+      path: ManPageCatalog/ManPageCatalog.entitlements
+    dependencies:
+      - sdk: PDFKit.framework
+    info:
+      path: ManPageCatalog/Info.plist
+      properties:
+        CFBundleName: Man Page Catalog
+        CFBundleDisplayName: Man Page Catalog
+        NSHumanReadableCopyright: ""
+        LSMinimumSystemVersion: "13.0"

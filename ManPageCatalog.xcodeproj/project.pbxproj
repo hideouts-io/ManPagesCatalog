@@ -1,0 +1,366 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0F9FAA51C832093D55E7A6F7 /* CatalogEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28A0E12B3A29B756A3740D94 /* CatalogEntry.swift */; };
+		4065298A68C4AFCF7CEAB456 /* CatalogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 238060B2044C372E7BD63E64 /* CatalogStore.swift */; };
+		5674B144CFA27DA7E15CE2C7 /* PDFKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 936483F79232714C089DDDEE /* PDFKit.framework */; };
+		56FA7A3D17807BD81FD234CC /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AE789379FD185305D523D6B /* ContentView.swift */; };
+		88158E9DB9DCAF0D8368A9F0 /* GenerateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC81C30F634E2641B421371 /* GenerateView.swift */; };
+		C71541D666BA7B23B259E9CB /* PDFDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */; };
+		FC8BE13C4FBF829A5ED0D957 /* ManPageCatalogApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E410E7A965177D39C2E750B7 /* ManPageCatalogApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		238060B2044C372E7BD63E64 /* CatalogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogStore.swift; sourceTree = "<group>"; };
+		28A0E12B3A29B756A3740D94 /* CatalogEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogEntry.swift; sourceTree = "<group>"; };
+		5AE789379FD185305D523D6B /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		8D74C4113CA18CD72058693F /* ManPageCatalog.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ManPageCatalog.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		92EBC437293CF6B65A3995DC /* ManPageCatalog.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ManPageCatalog.entitlements; sourceTree = "<group>"; };
+		936483F79232714C089DDDEE /* PDFKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PDFKit.framework; path = System/Library/Frameworks/PDFKit.framework; sourceTree = SDKROOT; };
+		B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDetailView.swift; sourceTree = "<group>"; };
+		DEC81C30F634E2641B421371 /* GenerateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenerateView.swift; sourceTree = "<group>"; };
+		E410E7A965177D39C2E750B7 /* ManPageCatalogApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManPageCatalogApp.swift; sourceTree = "<group>"; };
+		F3838CF2F21703BC935D9B1A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		D6BE03E40DC3D49823807F41 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5674B144CFA27DA7E15CE2C7 /* PDFKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		037027898911A9EA6B734F0D /* ManPageCatalog */ = {
+			isa = PBXGroup;
+			children = (
+				F3838CF2F21703BC935D9B1A /* Info.plist */,
+				92EBC437293CF6B65A3995DC /* ManPageCatalog.entitlements */,
+				E410E7A965177D39C2E750B7 /* ManPageCatalogApp.swift */,
+				FDC79C3D79BA29629554E60D /* Models */,
+				68D703B3DD845D6E58ED6461 /* Store */,
+				913C23AF63CE9CC0FDE2C33C /* Views */,
+			);
+			path = ManPageCatalog;
+			sourceTree = "<group>";
+		};
+		159D7F36E9CE2A5EDAAA54C0 = {
+			isa = PBXGroup;
+			children = (
+				037027898911A9EA6B734F0D /* ManPageCatalog */,
+				C0CA1E27E91DAACD8C7C00D4 /* Frameworks */,
+				6E5418397DBB2F09548BB3EB /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		68D703B3DD845D6E58ED6461 /* Store */ = {
+			isa = PBXGroup;
+			children = (
+				238060B2044C372E7BD63E64 /* CatalogStore.swift */,
+			);
+			path = Store;
+			sourceTree = "<group>";
+		};
+		6E5418397DBB2F09548BB3EB /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8D74C4113CA18CD72058693F /* ManPageCatalog.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		913C23AF63CE9CC0FDE2C33C /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				5AE789379FD185305D523D6B /* ContentView.swift */,
+				DEC81C30F634E2641B421371 /* GenerateView.swift */,
+				B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		C0CA1E27E91DAACD8C7C00D4 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				936483F79232714C089DDDEE /* PDFKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		FDC79C3D79BA29629554E60D /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				28A0E12B3A29B756A3740D94 /* CatalogEntry.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5CB5AA063284A5711C704C06 /* ManPageCatalog */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FA8DD5ED7647F96797DF41C9 /* Build configuration list for PBXNativeTarget "ManPageCatalog" */;
+			buildPhases = (
+				01504714BA8100B833B9ED33 /* Sources */,
+				D6BE03E40DC3D49823807F41 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ManPageCatalog;
+			packageProductDependencies = (
+			);
+			productName = ManPageCatalog;
+			productReference = 8D74C4113CA18CD72058693F /* ManPageCatalog.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		DD293784D325AECE12BC0F53 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					5CB5AA063284A5711C704C06 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 5067096B5EED30DD7E4B14D2 /* Build configuration list for PBXProject "ManPageCatalog" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 159D7F36E9CE2A5EDAAA54C0;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 6E5418397DBB2F09548BB3EB /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5CB5AA063284A5711C704C06 /* ManPageCatalog */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		01504714BA8100B833B9ED33 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0F9FAA51C832093D55E7A6F7 /* CatalogEntry.swift in Sources */,
+				4065298A68C4AFCF7CEAB456 /* CatalogStore.swift in Sources */,
+				56FA7A3D17807BD81FD234CC /* ContentView.swift in Sources */,
+				88158E9DB9DCAF0D8368A9F0 /* GenerateView.swift in Sources */,
+				FC8BE13C4FBF829A5ED0D957 /* ManPageCatalogApp.swift in Sources */,
+				C71541D666BA7B23B259E9CB /* PDFDetailView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		2A23DE3DA460CC40B91C842E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		46A971034B52FE07D186B6FA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ManPageCatalog/ManPageCatalog.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
+				INFOPLIST_FILE = ManPageCatalog/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.ManPageCatalog;
+				PRODUCT_NAME = "Man Page Catalog";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		A48A54A6FC5C437607436E68 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ManPageCatalog/ManPageCatalog.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = NO;
+				INFOPLIST_FILE = ManPageCatalog/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.ManPageCatalog;
+				PRODUCT_NAME = "Man Page Catalog";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		DDF3E7B0D64F22C4D3000AEC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5067096B5EED30DD7E4B14D2 /* Build configuration list for PBXProject "ManPageCatalog" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DDF3E7B0D64F22C4D3000AEC /* Debug */,
+				2A23DE3DA460CC40B91C842E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FA8DD5ED7647F96797DF41C9 /* Build configuration list for PBXNativeTarget "ManPageCatalog" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A48A54A6FC5C437607436E68 /* Debug */,
+				46A971034B52FE07D186B6FA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = DD293784D325AECE12BC0F53 /* Project object */;
+}
