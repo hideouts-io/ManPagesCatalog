@@ -1,0 +1,61 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"          # triggers on tags like v1.0.0, v1.2.3
+  workflow_dispatch:  # allows manual trigger from GitHub UI
+
+jobs:
+  build:
+    runs-on: macos-14   # Apple Silicon runner (M1)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build Release Archive
+        run: |
+          xcodebuild archive \
+            -project ManPageCatalog.xcodeproj \
+            -scheme ManPageCatalog \
+            -configuration Release \
+            -archivePath build/ManPageCatalog.xcarchive \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Export .app from Archive
+        run: |
+          mkdir -p build/export
+          cp -R build/ManPageCatalog.xcarchive/Products/Applications/ManPageCatalog.app \
+                build/export/ManPageCatalog.app
+
+      - name: Zip the .app
+        run: |
+          cd build/export
+          zip -r --symlinks ../../ManPageCatalog-macOS.zip ManPageCatalog.app
+
+      - name: Upload artifact (for manual runs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ManPageCatalog-macOS
+          path: ManPageCatalog-macOS.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ManPageCatalog-macOS.zip
+          body: |
+            ## Man Page Catalog ${{ github.ref_name }}
+
+            ### Install
+            1. Download `ManPageCatalog-macOS.zip`
+            2. Unzip and drag `ManPageCatalog.app` to `/Applications`
+            3. Install dependencies: `brew install groff ghostscript`
+            4. Open the app and click **Generate**
