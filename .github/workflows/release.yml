@@ -1,10 +1,7 @@
 name: Build and Release
 
 on:
-  push:
-    tags:
-      - "v*"
-  workflow_dispatch:
+  workflow_dispatch:  # manual only — releases are created locally via gh release create
 
 jobs:
   build:
