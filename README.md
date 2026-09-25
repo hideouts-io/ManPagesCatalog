@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Man Page Catalog logo" width="200">
+</p>
+
 # Man Page Catalog
 
 A native macOS app that converts every man page on your system into a searchable PDF and lets you browse them in a clean three-column interface.
