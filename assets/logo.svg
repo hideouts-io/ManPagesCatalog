@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Man Page Catalog</title>
+  <defs>
+    <clipPath id="v">
+      <polygon points="150,236 372,236 512,500 652,236 874,236 512,944"/>
+    </clipPath>
+  </defs>
+  <!-- disc -->
+  <circle cx="512" cy="512" r="504" fill="#0b0b0b" stroke="#d9d9d9" stroke-width="8"/>
+  <!-- red V with white outline -->
+  <polygon points="150,236 372,236 512,500 652,236 874,236 512,944" fill="#fff" stroke="#fff" stroke-width="28" stroke-linejoin="miter"/>
+  <polygon points="150,236 372,236 512,500 652,236 874,236 512,944" fill="#a51c1c"/>
+  <!-- white diagonal band across the left arm -->
+  <g clip-path="url(#v)">
+    <polygon points="0,420 520,330 520,410 0,500" fill="#fff"/>
+  </g>
+  <!-- terminal window emblem -->
+  <g transform="translate(372,318)">
+    <rect x="0" y="0" width="280" height="196" rx="18" fill="#0b0b0b" stroke="#fff" stroke-width="14"/>
+    <rect x="7" y="7" width="266" height="36" rx="11" fill="#fff"/>
+    <circle cx="34" cy="25" r="8" fill="#a51c1c"/>
+    <circle cx="60" cy="25" r="8" fill="#0b0b0b"/>
+    <circle cx="86" cy="25" r="8" fill="#0b0b0b"/>
+    <polyline points="42,84 88,114 42,144" fill="none" stroke="#fff" stroke-width="18" stroke-linecap="square" stroke-linejoin="miter"/>
+    <rect x="112" y="134" width="84" height="18" fill="#a51c1c"/>
+  </g>
+  <!-- banner -->
+  <rect x="176" y="600" width="672" height="140" fill="#0b0b0b"/>
+  <rect x="190" y="614" width="644" height="112" fill="#fff"/>
+  <rect x="204" y="628" width="616" height="84" fill="none" stroke="#0b0b0b" stroke-width="8"/>
+  <text x="512" y="700" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="900" font-size="84" letter-spacing="6" fill="#0b0b0b">MAN</text>
+</svg>
