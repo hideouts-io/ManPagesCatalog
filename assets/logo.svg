@@ -28,5 +28,5 @@
   <rect x="176" y="600" width="672" height="140" fill="#0b0b0b"/>
   <rect x="190" y="614" width="644" height="112" fill="#fff"/>
   <rect x="204" y="628" width="616" height="84" fill="none" stroke="#0b0b0b" stroke-width="8"/>
-  <text x="512" y="700" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="900" font-size="84" letter-spacing="6" fill="#0b0b0b">MAN(1)</text>
+  <text x="512" y="700" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="900" font-size="84" letter-spacing="6" fill="#0b0b0b">MAN</text>
 </svg>
