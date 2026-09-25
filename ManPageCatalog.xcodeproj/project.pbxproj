@@ -12,6 +12,7 @@
 		5674B144CFA27DA7E15CE2C7 /* PDFKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 936483F79232714C089DDDEE /* PDFKit.framework */; };
 		56FA7A3D17807BD81FD234CC /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AE789379FD185305D523D6B /* ContentView.swift */; };
 		88158E9DB9DCAF0D8368A9F0 /* GenerateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC81C30F634E2641B421371 /* GenerateView.swift */; };
+		B9C8CB4C9ABB75CDA05179E4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A8CB94A361367540DB0E9EEB /* Assets.xcassets */; };
 		C71541D666BA7B23B259E9CB /* PDFDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */; };
 		FC8BE13C4FBF829A5ED0D957 /* ManPageCatalogApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E410E7A965177D39C2E750B7 /* ManPageCatalogApp.swift */; };
 /* End PBXBuildFile section */
@@ -23,6 +24,7 @@
 		8D74C4113CA18CD72058693F /* ManPageCatalog.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ManPageCatalog.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		92EBC437293CF6B65A3995DC /* ManPageCatalog.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ManPageCatalog.entitlements; sourceTree = "<group>"; };
 		936483F79232714C089DDDEE /* PDFKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PDFKit.framework; path = System/Library/Frameworks/PDFKit.framework; sourceTree = SDKROOT; };
+		A8CB94A361367540DB0E9EEB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDetailView.swift; sourceTree = "<group>"; };
 		DEC81C30F634E2641B421371 /* GenerateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenerateView.swift; sourceTree = "<group>"; };
 		E410E7A965177D39C2E750B7 /* ManPageCatalogApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManPageCatalogApp.swift; sourceTree = "<group>"; };
@@ -44,6 +46,7 @@
 		037027898911A9EA6B734F0D /* ManPageCatalog */ = {
 			isa = PBXGroup;
 			children = (
+				A8CB94A361367540DB0E9EEB /* Assets.xcassets */,
 				F3838CF2F21703BC935D9B1A /* Info.plist */,
 				92EBC437293CF6B65A3995DC /* ManPageCatalog.entitlements */,
 				E410E7A965177D39C2E750B7 /* ManPageCatalogApp.swift */,
@@ -113,6 +116,7 @@
 			buildConfigurationList = FA8DD5ED7647F96797DF41C9 /* Build configuration list for PBXNativeTarget "ManPageCatalog" */;
 			buildPhases = (
 				01504714BA8100B833B9ED33 /* Sources */,
+				F7C474E8CB72C41EDA59EE92 /* Resources */,
 				D6BE03E40DC3D49823807F41 /* Frameworks */,
 			);
 			buildRules = (
@@ -158,6 +162,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F7C474E8CB72C41EDA59EE92 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B9C8CB4C9ABB75CDA05179E4 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		01504714BA8100B833B9ED33 /* Sources */ = {
