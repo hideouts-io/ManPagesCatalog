@@ -28,18 +28,28 @@ brew install groff ghostscript
 
 Because this app is not signed with an Apple Developer certificate, macOS will block it on first launch.
 
-To open it:
-1. Right-click `Man Page Catalog.app` in Finder
-2. Click **Open**
-3. Click **Open** again in the security dialog
+To open it the first time:
+
+1. Right-click `Man Page Catalog.app` in Finder and choose **Open**.
+2. Click **Open** again in the security dialog.
+
+On macOS 15 Sequoia and later, the dialog may only offer **Done** or **Move to Trash**. In that case:
+
+1. Click **Done**.
+2. Open **System Settings → Privacy & Security**.
+3. Scroll to the **Security** section and click **Open Anyway** next to the message about `Man Page Catalog.app`.
+4. Confirm with your password or Touch ID, then click **Open**.
 
 You only need to do this once. After that it opens normally.
 
-Alternatively, remove the quarantine flag in Terminal:
-
-```bash
-xattr -dr com.apple.quarantine "/Applications/Man Page Catalog.app"
-```
+> [!WARNING]
+> **Advanced: removing the quarantine flag in Terminal**
+>
+> The command below removes the `com.apple.quarantine` attribute, so Gatekeeper skips its first-launch check for this app. Use it only if the steps above don't work, and only on a copy you downloaded from this repository's releases or built yourself.
+>
+> ```bash
+> xattr -dr com.apple.quarantine "/Applications/Man Page Catalog.app"
+> ```
 
 ---
 
@@ -85,3 +95,9 @@ open ManPageCatalog.xcodeproj
 ```
 
 Then hit **⌘R** in Xcode to run.
+
+---
+
+## License
+
+Man Page Catalog is released under the [MIT License](LICENSE).
