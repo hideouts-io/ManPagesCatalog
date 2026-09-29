@@ -17,6 +17,11 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app
 
+      - name: Native integration tests
+        run: |
+          xcodebuild test -project ManPageCatalog.xcodeproj -scheme ManPageCatalog \
+            -destination 'platform=macOS' CODE_SIGN_IDENTITY="-"
+
       - name: Build Release Archive
         run: |
           xcodebuild archive \
@@ -25,9 +30,8 @@ jobs:
             -configuration Release \
             -archivePath $RUNNER_TEMP/ManPageCatalog.xcarchive \
             CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO
+            ONLY_ACTIVE_ARCH=NO \
+            ARCHS="arm64 x86_64"
 
       - name: Package .app into zip (app only, no source)
         run: |
@@ -56,9 +60,9 @@ jobs:
             ### Install
             1. Download `ManPageCatalog-macOS.zip` below
             2. Unzip — drag `Man Page Catalog.app` to `/Applications`
-            3. Install dependencies: `brew install groff ghostscript`
-            4. Right-click the app → **Open** → **Open** (first launch only)
+            This workflow produces an ad-hoc signed development artifact, not a notarized release.
+            No Python or Homebrew runtime dependencies are required.
 
             ### Requirements
             - macOS 13+
-            - Homebrew: `brew install groff ghostscript`
+            - Built-in macOS manual tools, including mandoc

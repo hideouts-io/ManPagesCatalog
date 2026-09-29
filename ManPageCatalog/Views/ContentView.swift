@@ -1,76 +1,162 @@
 import SwiftUI
 
 struct ContentView: View {
-    @EnvironmentObject var store: CatalogStore
-    @State private var selectedSection: String? = nil
-    @State private var selectedEntry: CatalogEntry? = nil
-    @State private var searchQuery = ""
-    @State private var showGenerate = false
+    @EnvironmentObject var library: LibraryStore
+    @EnvironmentObject var reader: ManualReader
+    @Environment(\.openWindow) private var openWindow
+    @State private var selectedID: String?
+    @State private var linkMessage = ""
+    @State private var pendingReference: (name: String, section: String)?
+    @State private var searchFocusRequest = UUID()
 
     var body: some View {
         NavigationSplitView {
-            // Sidebar — sections
-            List(selection: $selectedSection) {
-                Label("All", systemImage: "books.vertical")
-                    .tag(Optional<String>.none)
-                ForEach(store.sections, id: \.self) { section in
-                    Label("Section \(section)", systemImage: "doc.text")
-                        .tag(Optional(section))
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationTitle("Sections")
-        } content: {
-            // Middle column — man page list
-            List(store.filteredEntries(section: selectedSection, query: searchQuery),
-                 selection: $selectedEntry) { entry in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(entry.name)(\(entry.section))")
-                        .font(.system(.body, design: .monospaced))
-                        .fontWeight(.medium)
-                    if !entry.description.isEmpty {
-                        Text(entry.description)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+            List(selection: $library.section) {
+                Label("All Manuals", systemImage: "books.vertical").tag(Optional<String>.none).accessibilityIdentifier("sectionAll")
+                Section("MANUAL SECTIONS") {
+                    ForEach(library.sections, id: \.self) { section in
+                        Text(sectionLabel(section)).tag(Optional(section)).accessibilityIdentifier("section-\(section)")
                     }
                 }
-                .tag(entry)
+            }.listStyle(.sidebar).navigationSplitViewColumnWidth(min: 150, ideal: 190, max: 260)
+            .safeAreaInset(edge: .bottom) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Button { openWindow(id: "sources") } label: { Label("Sources & Index", systemImage: "externaldrive") }
+                        .accessibilityIdentifier("showSources")
+                    Text("\(library.pages.count) manuals\n\(library.indexedCount) indexed manuals")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             }
-            .searchable(text: $searchQuery, prompt: "Search man pages…")
-            .navigationTitle(selectedSection.map { "Section \($0)" } ?? "All Pages")
-            .navigationSubtitle("\(store.filteredEntries(section: selectedSection, query: searchQuery).count) pages")
+        } content: {
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(library.section.map { "Section \($0)" } ?? "All sections").font(.headline).accessibilityIdentifier("searchScope")
+                        Spacer()
+                        if library.section != nil || library.root != nil {
+                            Button("Search All") { library.searchAll(); searchFocusRequest = UUID() }.accessibilityIdentifier("searchAll")
+                        }
+                    }
+                    Picker("Source", selection: $library.root) {
+                        Text("All sources").tag(Optional<String>.none)
+                        ForEach(library.coverage) { source in Text(source.root.path).tag(Optional(source.root.path)) }
+                    }.labelsHidden().accessibilityLabel("Source filter").accessibilityIdentifier("sourceFilter")
+                    Toggle("Include full text", isOn: $library.fullText).toggleStyle(.checkbox).accessibilityIdentifier("fullTextSearch")
+                    if library.fullText { Text("Covers \(library.indexedCount) of \(library.pages.count) indexed manuals").font(.caption).foregroundStyle(.secondary) }
+                    Text("\(library.results.count) results").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("resultCount")
+                }.padding(12).background(.bar)
+                Divider()
+                List(Array(library.results.prefix(1000)), selection: $selectedID) { result in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(result.page.title).font(.system(.body, design: .monospaced)).fontWeight(.semibold)
+                        Text(result.page.description.isEmpty ? (result.page.problem != nil ? "Description unavailable — see Sources" : result.page.indexed ? "No description in this manual" : "Description not indexed yet") : result.page.description)
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        HStack {
+                            Text(result.page.root.path).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Text(result.reason)
+                        }.font(.system(size: 10)).foregroundStyle(.secondary)
+                    }.padding(.vertical, 4).tag(result.page.id)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("result-\(result.page.source.path)")
+                }.accessibilityIdentifier("searchResults")
+                .overlay {
+                    if library.results.isEmpty {
+                        VStack(spacing: 10) {
+                            Image(systemName: "magnifyingglass").font(.largeTitle).foregroundStyle(.secondary)
+                            Text(library.isIndexing && library.pages.isEmpty ? "Discovering manuals…" : library.errorMessage != nil && library.pages.isEmpty ? "Library unavailable" : library.pages.isEmpty ? "No manuals discovered" : "No matching manuals").font(.headline)
+                            Text("Try a command name, network, or processes.").font(.caption).foregroundStyle(.secondary)
+                            Button("Search All Sources & Sections") { library.searchAll(); searchFocusRequest = UUID() }.accessibilityIdentifier("emptySearchAll")
+                            if library.pages.isEmpty { Button("Review Sources") { openWindow(id: "sources") }.accessibilityIdentifier("emptyReviewSources") }
+                        }.padding().multilineTextAlignment(.center)
+                    }
+                }
+                if library.results.count > 1000 { Text("First 1,000 results shown. Refine your search to see more.").font(.caption).padding(8) }
+            }.navigationSplitViewColumnWidth(min: 220, ideal: 290, max: 430)
         } detail: {
-            // Detail — PDF viewer
-            if let entry = selectedEntry, let url = store.pdfURL(for: entry) {
-                PDFDetailView(url: url, title: "\(entry.name)(\(entry.section))", sourcePath: entry.source_path, executablePath: entry.executable_path)
-            } else {
-                VStack(spacing: 12) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 48))
-                        .foregroundStyle(.secondary)
-                    Text("Select a Man Page")
-                        .font(.title2).fontWeight(.semibold)
-                    Text("Choose a man page from the list to view its PDF.")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                if !linkMessage.isEmpty { Text(linkMessage).font(.caption).padding(8).accessibilityIdentifier("referenceStatus") }
+                ManualDetailView(reader: reader)
             }
         }
+        .navigationTitle("Man Page Catalog")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showGenerate = true
-                } label: {
-                    Label("Generate", systemImage: "arrow.clockwise.circle")
-                }
-                .help("Generate PDFs from man pages")
+            ToolbarItemGroup(placement: .navigation) {
+                Button { Task { if let context = await reader.back() { restore(context) } } } label: { Image(systemName: "chevron.left") }
+                    .disabled(!reader.canBack || reader.loading).help("Back (⌘[)").accessibilityIdentifier("navBack").keyboardShortcut("[", modifiers: .command)
+                Button { Task { if let context = await reader.forward() { restore(context) } } } label: { Image(systemName: "chevron.right") }
+                    .disabled(!reader.canForward || reader.loading).help("Forward (⌘])").accessibilityIdentifier("navForward").keyboardShortcut("]", modifiers: .command)
+            }
+            ToolbarItem {
+                GlobalSearchField(text: $library.query, focusRequest: searchFocusRequest) {
+                    Task { if let page = await library.firstResultForCurrentSearch() { open(page) } }
+                }.frame(minWidth: 240, idealWidth: 320, maxWidth: 420)
+            }
+            ToolbarItem {
+                Button { openWindow(id: "sources") } label: { Label(library.isIndexing ? "Indexing…" : "Sources", systemImage: library.isIndexing ? "arrow.triangle.2.circlepath" : "externaldrive") }
+                    .accessibilityIdentifier("manageSources")
             }
         }
-        .sheet(isPresented: $showGenerate) {
-            GenerateView()
-                .environmentObject(store)
+        .safeAreaInset(edge: .bottom) {
+            HStack {
+                Text(library.errorMessage ?? library.status).lineLimit(2).textSelection(.enabled).accessibilityIdentifier("libraryStatus")
+                Spacer()
+                if library.isIndexing { Button("Stop") { library.stop() }.accessibilityIdentifier("stopIndexing") }
+            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 6).background(.bar)
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .task {
+            reader.onReference = { name, section in followReference(name: name, section: section) }
+            library.scan()
+        }
+        .onChange(of: selectedID) { id in if let page = library.pages.first(where: { $0.id == id }) { open(page) } }
+        .onChange(of: library.pages.count) { count in
+            if count > 0, let reference = pendingReference {
+                pendingReference = nil
+                followReference(name: reference.name, section: reference.section)
+            }
+        }
+        .onChange(of: library.isIndexing) { indexing in
+            if !indexing, let reference = pendingReference {
+                pendingReference = nil
+                followReference(name: reference.name, section: reference.section)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .searchCommands)) { _ in
+            library.searchAll()
+            searchFocusRequest = UUID()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .reloadCatalog)) { _ in library.scan() }
+        .onOpenURL { url in
+            guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false), url.scheme == "manpagescatalog" else { return }
+            if let name = parts.queryItems?.first(where: { $0.name == "name" })?.value,
+               let section = parts.queryItems?.first(where: { $0.name == "section" })?.value { followReference(name: name, section: section) }
+            else { library.searchAll(); library.query = parts.queryItems?.first(where: { $0.name == "query" })?.value ?? url.host ?? ""; searchFocusRequest = UUID() }
+        }
+        .frame(minWidth: 1060, minHeight: 650)
+    }
+
+    private func open(_ page: ManualPage) {
+        linkMessage = ""
+        let context = BrowseContext(query: library.query, section: library.section, root: library.root, fullText: library.fullText)
+        Task { await reader.open(page: page, context: context) }
+    }
+
+    private func followReference(name: String, section: String) {
+        if library.pages.isEmpty && library.isIndexing {
+            pendingReference = (name, section)
+            linkMessage = "Discovering sources for \(name)(\(section))…"
+            return
+        }
+        if let page = library.reference(name: name, section: section, preferredRoot: reader.page?.root) { open(page) }
+        else {
+            library.searchAll()
+            library.query = name
+            linkMessage = "\(name)(\(section)) is not in the current library. Search remains available; review Sources to add documentation."
+        }
+    }
+
+    private func restore(_ context: BrowseContext) {
+        library.query = context.query; library.section = context.section; library.root = context.root; library.fullText = context.fullText
+        linkMessage = ""
     }
 }

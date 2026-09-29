@@ -8,25 +8,70 @@
 
 /* Begin PBXBuildFile section */
 		0F9FAA51C832093D55E7A6F7 /* CatalogEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28A0E12B3A29B756A3740D94 /* CatalogEntry.swift */; };
+		25094B05800483476D3A6743 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = FC99C3E6091C76F34E5F48D4 /* libsqlite3.tbd */; };
+		2B2FA040EA4E6D778E828A5C /* CatalogIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92A29C938BEF4E09EA90DEE4 /* CatalogIntegrationTests.swift */; };
+		314F88AAA993E32665C2E359 /* NativeBrowserIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A15F20ADF2D1F8952C7AF8 /* NativeBrowserIntegrationTests.swift */; };
+		400D266040D51BFC56898D21 /* ManualReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59606FFA25756A293A459359 /* ManualReader.swift */; };
 		4065298A68C4AFCF7CEAB456 /* CatalogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 238060B2044C372E7BD63E64 /* CatalogStore.swift */; };
+		453067F1176D63813E3BECE1 /* ManualCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C013DADA15BAC2ABDC0401A8 /* ManualCatalog.swift */; };
+		51C41E25BDB3021166F484A1 /* ManualProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = E12F63AFF7DC6C5E4A6F400B /* ManualProcess.swift */; };
 		5674B144CFA27DA7E15CE2C7 /* PDFKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 936483F79232714C089DDDEE /* PDFKit.framework */; };
 		56FA7A3D17807BD81FD234CC /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AE789379FD185305D523D6B /* ContentView.swift */; };
+		66416D026B5F378211223742 /* ManualPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8D6176FEC551191B7FC43F /* ManualPage.swift */; };
+		739B57F35D3ED2F6A446E9CC /* ManualDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94B5D632E956F98325ECC4A7 /* ManualDetailView.swift */; };
 		88158E9DB9DCAF0D8368A9F0 /* GenerateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC81C30F634E2641B421371 /* GenerateView.swift */; };
+		966C891CB5E9E8FDD8E14762 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2D1AACE5F5C6EE1CFB147CAD /* WebKit.framework */; };
+		AD35564B134E6026CEAF72FD /* CatalogGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4A54B9040641DBE3A1204A /* CatalogGenerator.swift */; };
+		AE517440544796ECDC330257 /* SourcesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EBB5851493F6616039B6151 /* SourcesView.swift */; };
+		BCA7F9B778767CD8C9ABE56F /* GlobalSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B92E408F8775A3FE5B40761 /* GlobalSearchField.swift */; };
+		BCBEC33796393BB2A408BE35 /* ManualHTML.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6E889097857520F0B0EEECA /* ManualHTML.swift */; };
+		BDA5F9917A7244CF6D6B31F9 /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06864A512AF71966B77493E /* LibraryStore.swift */; };
 		C71541D666BA7B23B259E9CB /* PDFDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */; };
+		DF531142D27B45B44B75B1D3 /* ManualSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079EF1B02AF7AF19D3A98FBA /* ManualSearch.swift */; };
+		F24549BA1AF555D4EFD05949 /* ManualSearchIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7BF7D8795E54FE58F99749 /* ManualSearchIndex.swift */; };
+		FC5513A1504105A9A203C3F4 /* PDFReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53C1E21A000D17C697FB2E93 /* PDFReader.swift */; };
 		FC8BE13C4FBF829A5ED0D957 /* ManPageCatalogApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E410E7A965177D39C2E750B7 /* ManPageCatalogApp.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		C90FAC36FD3CC193AB25BEDF /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = DD293784D325AECE12BC0F53 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5CB5AA063284A5711C704C06;
+			remoteInfo = ManPageCatalog;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		079EF1B02AF7AF19D3A98FBA /* ManualSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualSearch.swift; sourceTree = "<group>"; };
+		0A7BF7D8795E54FE58F99749 /* ManualSearchIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualSearchIndex.swift; sourceTree = "<group>"; };
+		1EBB5851493F6616039B6151 /* SourcesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcesView.swift; sourceTree = "<group>"; };
 		238060B2044C372E7BD63E64 /* CatalogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogStore.swift; sourceTree = "<group>"; };
 		28A0E12B3A29B756A3740D94 /* CatalogEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogEntry.swift; sourceTree = "<group>"; };
+		2B92E408F8775A3FE5B40761 /* GlobalSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchField.swift; sourceTree = "<group>"; };
+		2D1AACE5F5C6EE1CFB147CAD /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		51D83AFDC6F6A346BF6D87B6 /* ManPageCatalogTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ManPageCatalogTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		53C1E21A000D17C697FB2E93 /* PDFReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFReader.swift; sourceTree = "<group>"; };
+		59606FFA25756A293A459359 /* ManualReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualReader.swift; sourceTree = "<group>"; };
 		5AE789379FD185305D523D6B /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		8D74C4113CA18CD72058693F /* ManPageCatalog.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ManPageCatalog.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7A4A54B9040641DBE3A1204A /* CatalogGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogGenerator.swift; sourceTree = "<group>"; };
+		92A29C938BEF4E09EA90DEE4 /* CatalogIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogIntegrationTests.swift; sourceTree = "<group>"; };
 		92EBC437293CF6B65A3995DC /* ManPageCatalog.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ManPageCatalog.entitlements; sourceTree = "<group>"; };
 		936483F79232714C089DDDEE /* PDFKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PDFKit.framework; path = System/Library/Frameworks/PDFKit.framework; sourceTree = SDKROOT; };
+		94B5D632E956F98325ECC4A7 /* ManualDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualDetailView.swift; sourceTree = "<group>"; };
+		9B8D6176FEC551191B7FC43F /* ManualPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualPage.swift; sourceTree = "<group>"; };
+		A6E889097857520F0B0EEECA /* ManualHTML.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualHTML.swift; sourceTree = "<group>"; };
 		B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDetailView.swift; sourceTree = "<group>"; };
+		C013DADA15BAC2ABDC0401A8 /* ManualCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualCatalog.swift; sourceTree = "<group>"; };
+		C06864A512AF71966B77493E /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
+		C1A15F20ADF2D1F8952C7AF8 /* NativeBrowserIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeBrowserIntegrationTests.swift; sourceTree = "<group>"; };
 		DEC81C30F634E2641B421371 /* GenerateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenerateView.swift; sourceTree = "<group>"; };
+		E12F63AFF7DC6C5E4A6F400B /* ManualProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualProcess.swift; sourceTree = "<group>"; };
 		E410E7A965177D39C2E750B7 /* ManPageCatalogApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManPageCatalogApp.swift; sourceTree = "<group>"; };
+		EC0494A6F74E72D2703DF96F /* Man Page Catalog.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Man Page Catalog.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		F3838CF2F21703BC935D9B1A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		FC99C3E6091C76F34E5F48D4 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -35,6 +80,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				5674B144CFA27DA7E15CE2C7 /* PDFKit.framework in Frameworks */,
+				966C891CB5E9E8FDD8E14762 /* WebKit.framework in Frameworks */,
+				25094B05800483476D3A6743 /* libsqlite3.tbd in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -47,7 +94,9 @@
 				F3838CF2F21703BC935D9B1A /* Info.plist */,
 				92EBC437293CF6B65A3995DC /* ManPageCatalog.entitlements */,
 				E410E7A965177D39C2E750B7 /* ManPageCatalogApp.swift */,
+				2616E826BF7F7D571853B6EB /* Library */,
 				FDC79C3D79BA29629554E60D /* Models */,
+				68C29BD361388BB66914E88F /* Reader */,
 				68D703B3DD845D6E58ED6461 /* Store */,
 				913C23AF63CE9CC0FDE2C33C /* Views */,
 			);
@@ -58,15 +107,40 @@
 			isa = PBXGroup;
 			children = (
 				037027898911A9EA6B734F0D /* ManPageCatalog */,
+				B722197A609718354AA5683F /* NativeTests */,
 				C0CA1E27E91DAACD8C7C00D4 /* Frameworks */,
 				6E5418397DBB2F09548BB3EB /* Products */,
 			);
 			sourceTree = "<group>";
 		};
+		2616E826BF7F7D571853B6EB /* Library */ = {
+			isa = PBXGroup;
+			children = (
+				C06864A512AF71966B77493E /* LibraryStore.swift */,
+				9B8D6176FEC551191B7FC43F /* ManualPage.swift */,
+				079EF1B02AF7AF19D3A98FBA /* ManualSearch.swift */,
+				0A7BF7D8795E54FE58F99749 /* ManualSearchIndex.swift */,
+			);
+			path = Library;
+			sourceTree = "<group>";
+		};
+		68C29BD361388BB66914E88F /* Reader */ = {
+			isa = PBXGroup;
+			children = (
+				A6E889097857520F0B0EEECA /* ManualHTML.swift */,
+				59606FFA25756A293A459359 /* ManualReader.swift */,
+			);
+			path = Reader;
+			sourceTree = "<group>";
+		};
 		68D703B3DD845D6E58ED6461 /* Store */ = {
 			isa = PBXGroup;
 			children = (
+				7A4A54B9040641DBE3A1204A /* CatalogGenerator.swift */,
 				238060B2044C372E7BD63E64 /* CatalogStore.swift */,
+				C013DADA15BAC2ABDC0401A8 /* ManualCatalog.swift */,
+				E12F63AFF7DC6C5E4A6F400B /* ManualProcess.swift */,
+				53C1E21A000D17C697FB2E93 /* PDFReader.swift */,
 			);
 			path = Store;
 			sourceTree = "<group>";
@@ -74,7 +148,8 @@
 		6E5418397DBB2F09548BB3EB /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				8D74C4113CA18CD72058693F /* ManPageCatalog.app */,
+				EC0494A6F74E72D2703DF96F /* Man Page Catalog.app */,
+				51D83AFDC6F6A346BF6D87B6 /* ManPageCatalogTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -84,15 +159,29 @@
 			children = (
 				5AE789379FD185305D523D6B /* ContentView.swift */,
 				DEC81C30F634E2641B421371 /* GenerateView.swift */,
+				2B92E408F8775A3FE5B40761 /* GlobalSearchField.swift */,
+				94B5D632E956F98325ECC4A7 /* ManualDetailView.swift */,
 				B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */,
+				1EBB5851493F6616039B6151 /* SourcesView.swift */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		B722197A609718354AA5683F /* NativeTests */ = {
+			isa = PBXGroup;
+			children = (
+				92A29C938BEF4E09EA90DEE4 /* CatalogIntegrationTests.swift */,
+				C1A15F20ADF2D1F8952C7AF8 /* NativeBrowserIntegrationTests.swift */,
+			);
+			path = NativeTests;
 			sourceTree = "<group>";
 		};
 		C0CA1E27E91DAACD8C7C00D4 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				FC99C3E6091C76F34E5F48D4 /* libsqlite3.tbd */,
 				936483F79232714C089DDDEE /* PDFKit.framework */,
+				2D1AACE5F5C6EE1CFB147CAD /* WebKit.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -108,6 +197,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		4EC9A7885DDBF1531D534363 /* ManPageCatalogTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CAE765ABD8946EB11BAD0129 /* Build configuration list for PBXNativeTarget "ManPageCatalogTests" */;
+			buildPhases = (
+				FFCDE17C0572002CBE14F3AE /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				376D10B1842C62C98A0372E7 /* PBXTargetDependency */,
+			);
+			name = ManPageCatalogTests;
+			packageProductDependencies = (
+			);
+			productName = ManPageCatalogTests;
+			productReference = 51D83AFDC6F6A346BF6D87B6 /* ManPageCatalogTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		5CB5AA063284A5711C704C06 /* ManPageCatalog */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = FA8DD5ED7647F96797DF41C9 /* Build configuration list for PBXNativeTarget "ManPageCatalog" */;
@@ -123,7 +230,7 @@
 			packageProductDependencies = (
 			);
 			productName = ManPageCatalog;
-			productReference = 8D74C4113CA18CD72058693F /* ManPageCatalog.app */;
+			productReference = EC0494A6F74E72D2703DF96F /* Man Page Catalog.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -133,7 +240,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1500;
+				LastUpgradeCheck = 1600;
 				TargetAttributes = {
 					5CB5AA063284A5711C704C06 = {
 						ProvisioningStyle = Automatic;
@@ -155,6 +262,7 @@
 			projectRoot = "";
 			targets = (
 				5CB5AA063284A5711C704C06 /* ManPageCatalog */,
+				4EC9A7885DDBF1531D534363 /* ManPageCatalogTests */,
 			);
 		};
 /* End PBXProject section */
@@ -165,17 +273,67 @@
 			buildActionMask = 2147483647;
 			files = (
 				0F9FAA51C832093D55E7A6F7 /* CatalogEntry.swift in Sources */,
+				AD35564B134E6026CEAF72FD /* CatalogGenerator.swift in Sources */,
 				4065298A68C4AFCF7CEAB456 /* CatalogStore.swift in Sources */,
 				56FA7A3D17807BD81FD234CC /* ContentView.swift in Sources */,
 				88158E9DB9DCAF0D8368A9F0 /* GenerateView.swift in Sources */,
+				BCA7F9B778767CD8C9ABE56F /* GlobalSearchField.swift in Sources */,
+				BDA5F9917A7244CF6D6B31F9 /* LibraryStore.swift in Sources */,
 				FC8BE13C4FBF829A5ED0D957 /* ManPageCatalogApp.swift in Sources */,
+				453067F1176D63813E3BECE1 /* ManualCatalog.swift in Sources */,
+				739B57F35D3ED2F6A446E9CC /* ManualDetailView.swift in Sources */,
+				BCBEC33796393BB2A408BE35 /* ManualHTML.swift in Sources */,
+				66416D026B5F378211223742 /* ManualPage.swift in Sources */,
+				51C41E25BDB3021166F484A1 /* ManualProcess.swift in Sources */,
+				400D266040D51BFC56898D21 /* ManualReader.swift in Sources */,
+				DF531142D27B45B44B75B1D3 /* ManualSearch.swift in Sources */,
+				F24549BA1AF555D4EFD05949 /* ManualSearchIndex.swift in Sources */,
 				C71541D666BA7B23B259E9CB /* PDFDetailView.swift in Sources */,
+				FC5513A1504105A9A203C3F4 /* PDFReader.swift in Sources */,
+				AE517440544796ECDC330257 /* SourcesView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FFCDE17C0572002CBE14F3AE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2B2FA040EA4E6D778E828A5C /* CatalogIntegrationTests.swift in Sources */,
+				314F88AAA993E32665C2E359 /* NativeBrowserIntegrationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		376D10B1842C62C98A0372E7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5CB5AA063284A5711C704C06 /* ManPageCatalog */;
+			targetProxy = C90FAC36FD3CC193AB25BEDF /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		12FEFA5E2BF27C27CD205E6C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.ManPageCatalogTests;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Man Page Catalog.app/Contents/MacOS/Man Page Catalog";
+			};
+			name = Release;
+		};
 		2A23DE3DA460CC40B91C842E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -339,6 +497,26 @@
 			};
 			name = Debug;
 		};
+		E578D1076FC76A323045BB79 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.local.ManPageCatalogTests;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Man Page Catalog.app/Contents/MacOS/Man Page Catalog";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -347,6 +525,15 @@
 			buildConfigurations = (
 				DDF3E7B0D64F22C4D3000AEC /* Debug */,
 				2A23DE3DA460CC40B91C842E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CAE765ABD8946EB11BAD0129 /* Build configuration list for PBXNativeTarget "ManPageCatalogTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E578D1076FC76A323045BB79 /* Debug */,
+				12FEFA5E2BF27C27CD205E6C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

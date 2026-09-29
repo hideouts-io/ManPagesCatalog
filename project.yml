@@ -3,10 +3,11 @@ options:
   bundleIdPrefix: com.local
   deploymentTarget:
     macOS: "13.0"
-  xcodeVersion: "15"
+  xcodeVersion: "16"
 
 targets:
   ManPageCatalog:
+    productName: Man Page Catalog
     type: application
     platform: macOS
     sources:
@@ -24,6 +25,8 @@ targets:
       path: ManPageCatalog/ManPageCatalog.entitlements
     dependencies:
       - sdk: PDFKit.framework
+      - sdk: WebKit.framework
+      - sdk: libsqlite3.tbd
     info:
       path: ManPageCatalog/Info.plist
       properties:
@@ -31,3 +34,34 @@ targets:
         CFBundleDisplayName: Man Page Catalog
         NSHumanReadableCopyright: ""
         LSMinimumSystemVersion: "13.0"
+        CFBundleURLTypes:
+          - CFBundleURLName: Manual Reference
+            CFBundleURLSchemes:
+              - manpagescatalog
+  ManPageCatalogTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: NativeTests
+    dependencies:
+      - target: ManPageCatalog
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_IDENTITY: "-"
+
+schemes:
+  ManPageCatalog:
+    build:
+      targets:
+        ManPageCatalog: all
+        ManPageCatalogTests: [test]
+    test:
+      environmentVariables:
+        MANPATH: /var/empty
+      commandLineArguments:
+        "-libraryDirectory /tmp/ManPagesCatalog-test-cache": true
+      targets:
+        - ManPageCatalogTests

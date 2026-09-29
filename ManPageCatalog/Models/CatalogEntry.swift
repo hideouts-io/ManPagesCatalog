@@ -1,6 +1,6 @@
 import Foundation
 
-struct CatalogEntry: Identifiable, Codable, Hashable {
+struct CatalogEntry: Identifiable, Codable, Hashable, Sendable {
     var id: String { "\(name).\(section)" }
     let name: String
     let section: String
@@ -10,6 +10,6 @@ struct CatalogEntry: Identifiable, Codable, Hashable {
     let executable_path: String?
 }
 
-struct Catalog: Codable {
+struct Catalog: Codable, Sendable {
     let entries: [CatalogEntry]
 }
