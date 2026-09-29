@@ -2,8 +2,10 @@ import SwiftUI
 
 @main
 struct ManPageCatalogApp: App {
+    @NSApplicationDelegateAdaptor(CatalogApplicationDelegate.self) private var applicationDelegate
     @StateObject private var library: LibraryStore
     @StateObject private var reader = ManualReader()
+    @StateObject private var terminal = TerminalSession()
 
     init() {
         let defaults = UserDefaults.standard
@@ -23,6 +25,8 @@ struct ManPageCatalogApp: App {
             ContentView()
                 .environmentObject(library)
                 .environmentObject(reader)
+                .environmentObject(terminal)
+                .onAppear { applicationDelegate.terminal = terminal }
         }
         .commands {
             CommandMenu("Find") {
@@ -50,6 +54,23 @@ struct ManPageCatalogApp: App {
         Window("Sources & Index", id: "sources") {
             SourcesView().environmentObject(library)
         }.windowResizability(.contentSize)
+    }
+}
+
+@MainActor
+final class CatalogApplicationDelegate: NSObject, NSApplicationDelegate {
+    weak var terminal: TerminalSession?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let terminal, terminal.active else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "End the terminal session and quit?"
+        alert.informativeText = "The shell and its attached jobs will stop. Unsaved work in those programs can be lost."
+        alert.addButton(withTitle: "End Session & Quit").setAccessibilityIdentifier("confirmTerminalQuit")
+        alert.addButton(withTitle: "Cancel").setAccessibilityIdentifier("cancelTerminalQuit")
+        guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+        terminal.shutdown()
+        return terminal.active ? .terminateCancel : .terminateNow
     }
 }
 

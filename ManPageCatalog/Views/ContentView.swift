@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var reader: ManualReader
+    @EnvironmentObject var terminal: TerminalSession
     @Environment(\.openWindow) private var openWindow
     @State private var selectedID: String?
     @State private var linkMessage = ""
@@ -76,7 +77,13 @@ struct ContentView: View {
         } detail: {
             VStack(spacing: 0) {
                 if !linkMessage.isEmpty { Text(linkMessage).font(.caption).padding(8).accessibilityIdentifier("referenceStatus") }
-                ManualDetailView(reader: reader)
+                VStack(spacing: 0) {
+                    ManualDetailView(reader: reader).frame(minHeight: 220, maxHeight: .infinity)
+                    if terminal.expanded {
+                        Divider()
+                        TerminalPane(session: terminal).frame(height: terminal.view == nil ? 320 : 460)
+                    }
+                }
             }
         }
         .navigationTitle("Man Page Catalog")
@@ -91,6 +98,11 @@ struct ContentView: View {
                 GlobalSearchField(text: $library.query, focusRequest: searchFocusRequest) {
                     Task { if let page = await library.firstResultForCurrentSearch() { open(page) } }
                 }.frame(minWidth: 240, idealWidth: 320, maxWidth: 420)
+            }
+            ToolbarItem {
+                Button { terminal.expanded.toggle() } label: {
+                    Label(terminal.active ? "Terminal • Running" : "Commands", systemImage: "terminal")
+                }.accessibilityIdentifier("toggleTerminalPane").keyboardShortcut("j", modifiers: .command)
             }
             ToolbarItem {
                 Button { openWindow(id: "sources") } label: { Label(library.isIndexing ? "Indexing…" : "Sources", systemImage: library.isIndexing ? "arrow.triangle.2.circlepath" : "externaldrive") }
@@ -126,13 +138,14 @@ struct ContentView: View {
             searchFocusRequest = UUID()
         }
         .onReceive(NotificationCenter.default.publisher(for: .reloadCatalog)) { _ in library.scan() }
+        .onDisappear { terminal.stop() }
         .onOpenURL { url in
             guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false), url.scheme == "manpagescatalog" else { return }
             if let name = parts.queryItems?.first(where: { $0.name == "name" })?.value,
                let section = parts.queryItems?.first(where: { $0.name == "section" })?.value { followReference(name: name, section: section) }
             else { library.searchAll(); library.query = parts.queryItems?.first(where: { $0.name == "query" })?.value ?? url.host ?? ""; searchFocusRequest = UUID() }
         }
-        .frame(minWidth: 1060, minHeight: 650)
+        .frame(minWidth: 1060, minHeight: terminal.expanded ? 820 : 650)
     }
 
     private func open(_ page: ManualPage) {

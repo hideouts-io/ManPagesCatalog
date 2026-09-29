@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ManualDetailView: View {
+    @EnvironmentObject var terminal: TerminalSession
+    @State private var pendingDraft: CommandDraft?
     @ObservedObject var reader: ManualReader
     @FocusState private var findFocused: Bool
     @State private var showOutline = false
@@ -63,6 +65,13 @@ struct ManualDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .previousMatch)) { _ in reader.findPrevious() }
         .onChange(of: reader.findQuery) { _ in if !reader.loading { reader.findNext() } }
         .onExitCommand { reader.showFind = false }
+        .alert("Replace the existing command draft?", isPresented: Binding(get: { pendingDraft != nil }, set: { if !$0 { pendingDraft = nil } })) {
+            Button("Replace Draft") {
+                if let draft = pendingDraft { terminal.prepare(text: draft.text, source: draft.source) }
+                pendingDraft = nil
+            }.accessibilityIdentifier("replaceCommandDraft")
+            Button("Cancel", role: .cancel) { pendingDraft = nil }.accessibilityIdentifier("cancelReplaceDraft")
+        } message: { Text("Your edited draft will be replaced. Preparing a draft never starts a shell or runs a command.") }
     }
 
     private func header(_ page: ManualPage) -> some View {
@@ -71,6 +80,21 @@ struct ManualDetailView: View {
                 Text(page.title).font(.system(.title2, design: .monospaced)).fontWeight(.semibold)
                     .accessibilityIdentifier("readerTitle")
                 Spacer()
+                Menu {
+                    Button("Prepare Command Name") { prepare(text: quotedShellWord(page.name), page: page) }
+                        .accessibilityIdentifier("prepareCommandName")
+                    Button("Prepare Selected Example") {
+                        Task {
+                            do {
+                                guard let text = try await reader.webView.evaluateJavaScript("window.getSelection().toString()") as? String, !text.isEmpty else {
+                                    throw TerminalSessionError(message: "Select an example in the manual first, then choose Prepare Selected Example.")
+                                }
+                                prepare(text: text, page: page)
+                            } catch { terminal.expanded = true; terminal.report(error) }
+                        }
+                    }.accessibilityIdentifier("prepareSelectedExample")
+                } label: { Label("Prepare", systemImage: "square.and.pencil") }
+                .accessibilityIdentifier("prepareCommandMenu")
                 Button { showOutline.toggle() } label: { Label("Contents", systemImage: "list.bullet") }
                     .accessibilityIdentifier("readerOutline").disabled(reader.loading)
                     .popover(isPresented: $showOutline) {
@@ -113,6 +137,13 @@ struct ManualDetailView: View {
                     .accessibilityIdentifier("copyOpenTerminal")
             }.controlSize(.small)
         }.padding(16).background(.bar)
+    }
+
+    private func prepare(text: String, page: ManualPage) {
+        let source = DraftSource(title: page.title, path: page.source.path,
+                                 executable: executablePath(name: page.name, section: page.section, environment: ProcessInfo.processInfo.environment))
+        if terminal.draftText.isEmpty { terminal.prepare(text: text, source: source) }
+        else { pendingDraft = CommandDraft(text: text, source: source) }
     }
 
     private func sourceDetails(_ page: ManualPage) -> some View {

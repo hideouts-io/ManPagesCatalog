@@ -5,6 +5,11 @@ options:
     macOS: "13.0"
   xcodeVersion: "16"
 
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    exactVersion: 1.18.0
+
 targets:
   ManPageCatalog:
     productName: Man Page Catalog
@@ -24,6 +29,7 @@ targets:
     entitlements:
       path: ManPageCatalog/ManPageCatalog.entitlements
     dependencies:
+      - package: SwiftTerm
       - sdk: PDFKit.framework
       - sdk: WebKit.framework
       - sdk: libsqlite3.tbd
