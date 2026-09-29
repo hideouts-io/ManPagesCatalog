@@ -15,7 +15,7 @@ struct CatalogProgress: Sendable {
 /// Uses the system's configured manual roots; an explicit MANPATH permits a bounded corpus.
 func manualRoots(environment: [String: String]) async throws -> [URL] {
     let path: String
-    if let configured = environment["MANPATH"], !configured.isEmpty {
+    if let configured = environment["MANPATH"], !configured.isEmpty, !configured.components(separatedBy: ":").contains("") {
         path = configured
     } else {
         let data = try await runManualTool(executable: URL(fileURLWithPath: "/usr/bin/manpath"), arguments: [],
@@ -53,6 +53,7 @@ func discoverManuals(roots: [URL]) throws -> [ManualSource] {
 }
 
 func manualBytes(source: URL) async throws -> Data {
+    try requireMaterializedManual(source)
     if ["gz", "Z", "bz2"].contains(source.pathExtension) {
         return try await runManualTool(executable: URL(fileURLWithPath: source.pathExtension == "bz2" ? "/usr/bin/bzip2" : "/usr/bin/gzip"), arguments: ["-dc", source.path],
                                        directory: source.deletingLastPathComponent(), input: nil)
@@ -64,24 +65,35 @@ func manualBytes(source: URL) async throws -> Data {
 struct ManualInput: Sendable {
     let bytes: Data
     let directory: URL
+    let sourceChain: [URL]
 }
 
 /// Resolves whole-file .so aliases, including compressed targets, before invoking mandoc.
 func manualInput(source: URL) async throws -> ManualInput {
+    try await validatedManualInput(source: source, validate: requireMaterializedManual)
+}
+
+func validatedManualInput(source: URL, validate: @Sendable (URL) throws -> Void) async throws -> ManualInput {
     var current = source.resolvingSymlinksInPath()
     var visited = Set<String>()
+    var chain: [URL] = []
     for _ in 0..<32 {
         try Task.checkCancellation()
         guard visited.insert(current.path).inserted else {
             throw ManualToolError(message: "Manual alias cycle at \(current.path) while opening \(source.path).")
         }
+        try validate(current)
+        chain.append(current)
         let bytes = try await manualBytes(source: current)
         let lines = String(decoding: bytes, as: UTF8.self).components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.hasPrefix(".\\\"") && !$0.hasPrefix("'\\\"") }
         let directory = current.deletingLastPathComponent()
         guard lines.count == 1, lines[0].hasPrefix(".so ") || lines[0].hasPrefix(".so\t") else {
-            return ManualInput(bytes: bytes, directory: directory.deletingLastPathComponent())
+            guard !lines.contains(where: { $0.range(of: #"^[.'](?:so|mso)[ \t]+"#, options: .regularExpression) != nil }) else {
+                throw DiscoveryAccessError(kind: .unsupported, message: "Embedded roff includes are unsupported: \(current.path). Only whole-file aliases can be resolved with verified file access.")
+            }
+            return ManualInput(bytes: bytes, directory: directory.deletingLastPathComponent(), sourceChain: chain)
         }
         let target = String(lines[0].dropFirst(4)).trimmingCharacters(in: .whitespaces)
         let relative = [directory.deletingLastPathComponent().appendingPathComponent(target), directory.appendingPathComponent(target)]

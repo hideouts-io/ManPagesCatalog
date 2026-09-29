@@ -24,9 +24,10 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         let alias = section.appendingPathComponent("alias.1")
         try ".so man1/compressed.1\n".write(to: alias, atomically: true, encoding: .utf8)
         try FileManager.default.createSymbolicLink(at: section.appendingPathComponent("symlink.1"), withDestinationURL: section.appendingPathComponent("launchctl.1"))
-        let scan = try scanLibrary(roots: [first, second, directory.appendingPathComponent("missing")])
-        XCTAssertEqual(scan.pages.count, 5)
-        XCTAssertEqual(scan.pages.filter { $0.name == "launchctl" }.count, 2)
+        let scan = try await scanLibrary(roots: [first, second, directory.appendingPathComponent("missing")])
+        XCTAssertEqual(scan.pages.count, 1)
+        XCTAssertEqual(scan.pages.first?.locations.count, 5)
+        XCTAssertEqual(scan.pages.flatMap(\.locations).filter { $0.name == "launchctl" }.count, 2)
         XCTAssertEqual(scan.coverage.last?.problems.count, 1)
         let description = try await manualDescription(source: alias)
         XCTAssertEqual(description, "Interfaces with launchd")
@@ -37,7 +38,7 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         try await renderManual(source: alias, destination: pdf)
         XCTAssertTrue(try XCTUnwrap(PDFDocument(url: pdf)?.string).contains("bootstrap"))
         let index = try ManualSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
-        var page = try XCTUnwrap(scan.pages.first { $0.name == "alias" })
+        var page = try XCTUnwrap(scan.pages.first)
         let text = try await manualText(source: alias)
         try await index.store(page: page, text: text, description: description, diagnostic: "")
         page.indexed = true
@@ -46,7 +47,7 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         XCTAssertEqual(matches, [page.id])
         XCTAssertEqual(rankedManuals(pages: [page], query: "bootstrap", section: nil, root: nil, fullText: matches).first?.reason, "Full text")
         XCTAssertTrue(rankedManuals(pages: [page], query: "bootstrap", section: "8", root: nil, fullText: matches).isEmpty)
-        XCTAssertEqual(rankedManuals(pages: scan.pages, query: "launchct", section: nil, root: nil, fullText: []).count, 2)
+        XCTAssertEqual(rankedManuals(pages: scan.pages, query: "launchct", section: nil, root: nil, fullText: []).count, 1)
         let reopened = try ManualSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
         let cached = try await reopened.metadata()
         XCTAssertEqual(cached.first?.description, description)
@@ -60,9 +61,16 @@ final class NativeBrowserIntegrationTests: XCTestCase {
 
     @MainActor
     func testHTMLReadingFindSelectionAndHistory() async throws {
-        let scan = try scanLibrary(roots: [URL(fileURLWithPath: "/usr/share/man")])
+        let scan = try await scanLibrary(roots: [URL(fileURLWithPath: "/usr/share/man")])
         let launchctl = try XCTUnwrap(scan.pages.first { $0.name == "launchctl" && $0.section == "1" })
         let ping = try XCTUnwrap(scan.pages.first { $0.name == "ping" && $0.section == "8" })
+        let names = Set(scan.pages.flatMap(\.locations).map(\.name))
+        for name in ["bzdiff", "ruby", "kswitch", "usdcat", "MetalPerformanceHUD"] {
+            if FileManager.default.fileExists(atPath: "/usr/share/man/man1/\(name).1") { XCTAssertTrue(names.contains(name), "Installed manual rejected: \(name)") }
+        }
+        if FileManager.default.fileExists(atPath: "/usr/share/man/mann/iwidgets_buttonbox.n") { XCTAssertTrue(names.contains("iwidgets_buttonbox")) }
+        XCTAssertTrue(names.contains("zshall"))
+        XCTAssertNotNil(scan.pages.first { $0.name == "zshall" }?.problem)
         let reader = ManualReader()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 650), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

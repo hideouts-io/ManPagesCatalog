@@ -1,91 +1,117 @@
 import Foundation
 
-struct ManualPage: Identifiable, Hashable, Sendable {
-    var id: String { source.path }
+struct ManualLocation: Hashable, Codable, Sendable {
+    let source: URL
+    let root: URL
+    let name: String
+    let section: String
+    let language: String
+    let stamp: String
+}
+
+struct ManualPage: Identifiable, Hashable, Codable, Sendable {
+    var id: String { "\(fingerprint):\(section):\(language)" }
     let name: String
     let section: String
     let source: URL
     let root: URL
     let fingerprint: String
+    let language: String
+    var locations: [ManualLocation]
     var description: String
     var indexed: Bool
     var problem: String?
     var title: String { "\(name)(\(section))" }
+
+    func at(_ location: ManualLocation) -> ManualPage {
+        ManualPage(name: location.name, section: location.section, source: location.source, root: location.root,
+                   fingerprint: fingerprint, language: location.language, locations: locations,
+                   description: description, indexed: indexed, problem: problem)
+    }
 }
 
-struct SourceCoverage: Identifiable, Sendable {
+enum CoverageKind: String, Codable, CaseIterable, Sendable {
+    case excluded, inaccessible, failed, unsupported
+}
+
+struct DiscoveryIssue: Codable, Hashable, Sendable {
+    let path: String
+    let kind: CoverageKind
+    let reason: String
+}
+
+struct SourceCoverage: Identifiable, Codable, Sendable {
     var id: String { root.path }
     let root: URL
     let count: Int
-    let problems: [String]
+    let directories: Int
+    let files: Int
+    let completed: Bool
+    let issues: [DiscoveryIssue]
+    var problems: [String] { issues.map { "\($0.path): \($0.reason)" } }
 }
 
-struct LibraryScan: Sendable {
+struct LibraryScan: Codable, Sendable {
     let pages: [ManualPage]
     let coverage: [SourceCoverage]
+    let cancelled: Bool
 }
 
-/// Searches manual directories and one locale level, never arbitrary home-directory contents.
-func scanLibrary(roots: [URL]) throws -> LibraryScan {
-    var pages: [ManualPage] = []
-    var coverage: [SourceCoverage] = []
-    var seen = Set<String>()
-    for root in roots {
-        try Task.checkCancellation()
-        var problems: [String] = []
-        let startCount = pages.count
-        do {
-            let children = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-            var sections: [URL] = []
-            for child in children {
-                guard try child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { continue }
-                if child.lastPathComponent.hasPrefix("man") { sections.append(child) }
-                else {
-                    let localized = try FileManager.default.contentsOfDirectory(at: child, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-                    sections += localized.filter { $0.lastPathComponent.hasPrefix("man") }
-                }
-            }
-            for sectionURL in sections.sorted(by: { $0.path < $1.path }) {
-                do {
-                    let files = try FileManager.default.contentsOfDirectory(at: sectionURL, includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey], options: [])
-                    for file in files.sorted(by: { $0.path < $1.path }) {
-                        do {
-                            let resolved = file.resolvingSymlinksInPath()
-                            let values = try resolved.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey])
-                            guard values.isRegularFile == true else { continue }
-                            let compressed = ["gz", "bz2", "Z", "xz"].contains(file.pathExtension)
-                            let plain = compressed ? file.deletingPathExtension() : file
-                            let section = plain.pathExtension
-                            guard let first = section.first, first.isNumber || first == "n",
-                                  seen.insert(file.standardizedFileURL.path).inserted else { continue }
-                            let unsupported = file.pathExtension == "xz" ? "XZ compression is not supported by the bundled system-tool integration." : nil
-                            // Compressed files and .so aliases are refreshed because their target may change independently.
-                            let alias = try !compressed && (values.fileSize ?? 0) < 2048 && String(decoding: Data(contentsOf: resolved), as: UTF8.self).contains(".so")
-                            let fingerprint = compressed || alias ? "" : "v2:\(resolved.path):\(values.contentModificationDate?.timeIntervalSince1970 ?? 0):\(values.fileSize ?? 0)"
-                            pages.append(ManualPage(name: plain.deletingPathExtension().lastPathComponent, section: section,
-                                                    source: file, root: root,
-                                                    fingerprint: fingerprint,
-                                                    description: "", indexed: false, problem: unsupported))
-                            if let unsupported { problems.append("\(file.path): \(unsupported)") }
-                        } catch { problems.append("\(file.path): \(error.localizedDescription)") }
-                    }
-                } catch { problems.append("\(sectionURL.path): \(error.localizedDescription)") }
-            }
-        } catch { problems.append("\(root.path): \(error.localizedDescription)") }
-        coverage.append(SourceCoverage(root: root, count: pages.count - startCount, problems: problems))
-    }
-    return LibraryScan(pages: pages, coverage: coverage)
+struct DiscoveryProgress: Sendable {
+    let path: String
+    let directories: Int
+    let files: Int
+    let manuals: Int
 }
 
-func systemLibraryRoots(environment: [String: String], additional: [String]) async throws -> [URL] {
-    var roots = try await manualRoots(environment: environment)
-    // An explicit MANPATH is an exact scope, useful for dedicated documentation collections.
-    if environment["MANPATH"] == nil {
-        let candidates = ["/usr/share/man", "/usr/local/share/man", "/opt/homebrew/share/man", "/opt/local/share/man",
-                          FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/man").path]
-        roots += candidates.filter { FileManager.default.fileExists(atPath: $0) }.map { URL(fileURLWithPath: $0) }
+/// Identical resolved content shares one search entry; names and every encountered location survive.
+func groupedManuals(_ pages: [ManualPage]) -> [ManualPage] {
+    let groups = Dictionary(grouping: pages, by: \.id)
+    return groups.values.map { group in
+        let locations = Array(Set(group.flatMap(\.locations))).sorted { $0.source.path < $1.source.path }
+        var page = group.sorted { $0.source.path < $1.source.path }[0]
+        page.locations = locations
+        return page
+    }.sorted { $0.source.path < $1.source.path }
+}
+
+/// Only remove prior locations positively covered by a completed scan. Failures retain usable data.
+func mergingDiscovery(previous: [ManualPage], scan: LibraryScan) -> [ManualPage] {
+    let discovered = Set(scan.pages.flatMap(\.locations).map { $0.source.path })
+    let retained = previous.compactMap { page -> ManualPage? in
+        let locations = page.locations.filter { location in
+            if discovered.contains(location.source.path) { return false }
+            return !scan.coverage.contains { coverage in
+                coverage.completed && pathContains(root: coverage.root.path, path: location.source.path) &&
+                !coverage.issues.contains { pathContains(root: $0.path, path: location.source.path) }
+            }
+        }
+        guard let first = locations.first else { return nil }
+        var retained = page.at(first)
+        retained.locations = locations
+        return retained
     }
-    roots += additional.map { URL(fileURLWithPath: $0) }
-    var seen = Set<String>()
-    return roots.map(\.standardizedFileURL).filter { seen.insert($0.path).inserted }
+    return groupedManuals(scan.pages + retained)
+}
+
+func pathContains(root: String, path: String) -> Bool {
+    path == root || path.hasPrefix(root == "/" ? "/" : root + "/")
+}
+
+/// Reject malformed persisted inventories before they can become scanner inputs.
+func loadDiscovery(_ url: URL) throws -> LibraryScan {
+    do {
+        let saved = try JSONDecoder().decode(LibraryScan.self, from: Data(contentsOf: url))
+        for page in saved.pages {
+            guard !page.locations.isEmpty, !page.name.isEmpty, !page.section.isEmpty,
+                  page.locations.contains(where: { $0.source == page.source && $0.root == page.root && $0.name == page.name }),
+                  page.fingerprint.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil,
+                  page.locations.allSatisfy({ $0.source.isFileURL && $0.root.isFileURL && !$0.name.isEmpty && $0.section == page.section && $0.language == page.language }) else {
+                throw ManualToolError(message: "Inventory contains a manual with invalid identity or source locations.")
+            }
+        }
+        return saved
+    } catch {
+        throw ManualToolError(message: "Cannot read discovery inventory \(url.path): \(error.localizedDescription) Move this app-owned inventory aside to rebuild it; original manuals and PDF catalogs are separate.")
+    }
 }

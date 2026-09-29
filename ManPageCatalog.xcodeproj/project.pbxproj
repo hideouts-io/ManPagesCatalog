@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0F9FAA51C832093D55E7A6F7 /* CatalogEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28A0E12B3A29B756A3740D94 /* CatalogEntry.swift */; };
+		1A8C7590185043EE18AC7B81 /* DiscoveryPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A5445E9B2E6B9495348CA7E /* DiscoveryPlan.swift */; };
 		25094B05800483476D3A6743 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = FC99C3E6091C76F34E5F48D4 /* libsqlite3.tbd */; };
 		2B2FA040EA4E6D778E828A5C /* CatalogIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92A29C938BEF4E09EA90DEE4 /* CatalogIntegrationTests.swift */; };
 		314F88AAA993E32665C2E359 /* NativeBrowserIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A15F20ADF2D1F8952C7AF8 /* NativeBrowserIntegrationTests.swift */; };
@@ -17,6 +18,7 @@
 		453067F1176D63813E3BECE1 /* ManualCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C013DADA15BAC2ABDC0401A8 /* ManualCatalog.swift */; };
 		470DCB11969529D6856DE178 /* SwiftTerm-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = F0D5ECA1252DCDDA1CA5DE4F /* SwiftTerm-LICENSE.txt */; };
 		51C41E25BDB3021166F484A1 /* ManualProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = E12F63AFF7DC6C5E4A6F400B /* ManualProcess.swift */; };
+		52AC22CD1FB5E3801DD9B8E9 /* DiscoveryIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2534D0F63D6EC5F6C1765E5B /* DiscoveryIntegrationTests.swift */; };
 		5674B144CFA27DA7E15CE2C7 /* PDFKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 936483F79232714C089DDDEE /* PDFKit.framework */; };
 		56FA7A3D17807BD81FD234CC /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AE789379FD185305D523D6B /* ContentView.swift */; };
 		66416D026B5F378211223742 /* ManualPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8D6176FEC551191B7FC43F /* ManualPage.swift */; };
@@ -27,6 +29,7 @@
 		AD35564B134E6026CEAF72FD /* CatalogGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4A54B9040641DBE3A1204A /* CatalogGenerator.swift */; };
 		AE517440544796ECDC330257 /* SourcesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EBB5851493F6616039B6151 /* SourcesView.swift */; };
 		B8022487201B7480F79941E9 /* TerminalPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = F049563F31CE81B1649E0159 /* TerminalPane.swift */; };
+		B825A33AF007AE7015BE7FF3 /* ManualDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2101FCFC3968030A1957B9D /* ManualDiscovery.swift */; };
 		B859160EA1688D8258467E74 /* TerminalIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1C14685E3C4CF5BA4329360 /* TerminalIntegrationTests.swift */; };
 		BCA7F9B778767CD8C9ABE56F /* GlobalSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B92E408F8775A3FE5B40761 /* GlobalSearchField.swift */; };
 		BCBEC33796393BB2A408BE35 /* ManualHTML.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6E889097857520F0B0EEECA /* ManualHTML.swift */; };
@@ -54,6 +57,7 @@
 		0A7BF7D8795E54FE58F99749 /* ManualSearchIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualSearchIndex.swift; sourceTree = "<group>"; };
 		1EBB5851493F6616039B6151 /* SourcesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcesView.swift; sourceTree = "<group>"; };
 		238060B2044C372E7BD63E64 /* CatalogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogStore.swift; sourceTree = "<group>"; };
+		2534D0F63D6EC5F6C1765E5B /* DiscoveryIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryIntegrationTests.swift; sourceTree = "<group>"; };
 		28A0E12B3A29B756A3740D94 /* CatalogEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogEntry.swift; sourceTree = "<group>"; };
 		2B92E408F8775A3FE5B40761 /* GlobalSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchField.swift; sourceTree = "<group>"; };
 		2D1AACE5F5C6EE1CFB147CAD /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
@@ -62,12 +66,14 @@
 		53C1E21A000D17C697FB2E93 /* PDFReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFReader.swift; sourceTree = "<group>"; };
 		59606FFA25756A293A459359 /* ManualReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualReader.swift; sourceTree = "<group>"; };
 		5AE789379FD185305D523D6B /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		6A5445E9B2E6B9495348CA7E /* DiscoveryPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryPlan.swift; sourceTree = "<group>"; };
 		7A4A54B9040641DBE3A1204A /* CatalogGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogGenerator.swift; sourceTree = "<group>"; };
 		92A29C938BEF4E09EA90DEE4 /* CatalogIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogIntegrationTests.swift; sourceTree = "<group>"; };
 		92EBC437293CF6B65A3995DC /* ManPageCatalog.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ManPageCatalog.entitlements; sourceTree = "<group>"; };
 		936483F79232714C089DDDEE /* PDFKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PDFKit.framework; path = System/Library/Frameworks/PDFKit.framework; sourceTree = SDKROOT; };
 		94B5D632E956F98325ECC4A7 /* ManualDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualDetailView.swift; sourceTree = "<group>"; };
 		9B8D6176FEC551191B7FC43F /* ManualPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualPage.swift; sourceTree = "<group>"; };
+		A2101FCFC3968030A1957B9D /* ManualDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualDiscovery.swift; sourceTree = "<group>"; };
 		A6E889097857520F0B0EEECA /* ManualHTML.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualHTML.swift; sourceTree = "<group>"; };
 		B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDetailView.swift; sourceTree = "<group>"; };
 		C013DADA15BAC2ABDC0401A8 /* ManualCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualCatalog.swift; sourceTree = "<group>"; };
@@ -130,7 +136,9 @@
 		2616E826BF7F7D571853B6EB /* Library */ = {
 			isa = PBXGroup;
 			children = (
+				6A5445E9B2E6B9495348CA7E /* DiscoveryPlan.swift */,
 				C06864A512AF71966B77493E /* LibraryStore.swift */,
+				A2101FCFC3968030A1957B9D /* ManualDiscovery.swift */,
 				9B8D6176FEC551191B7FC43F /* ManualPage.swift */,
 				079EF1B02AF7AF19D3A98FBA /* ManualSearch.swift */,
 				0A7BF7D8795E54FE58F99749 /* ManualSearchIndex.swift */,
@@ -203,6 +211,7 @@
 			isa = PBXGroup;
 			children = (
 				92A29C938BEF4E09EA90DEE4 /* CatalogIntegrationTests.swift */,
+				2534D0F63D6EC5F6C1765E5B /* DiscoveryIntegrationTests.swift */,
 				C1A15F20ADF2D1F8952C7AF8 /* NativeBrowserIntegrationTests.swift */,
 				F1C14685E3C4CF5BA4329360 /* TerminalIntegrationTests.swift */,
 			);
@@ -326,12 +335,14 @@
 				4065298A68C4AFCF7CEAB456 /* CatalogStore.swift in Sources */,
 				E048704D6E473855A54D5CF8 /* CommandDraft.swift in Sources */,
 				56FA7A3D17807BD81FD234CC /* ContentView.swift in Sources */,
+				1A8C7590185043EE18AC7B81 /* DiscoveryPlan.swift in Sources */,
 				88158E9DB9DCAF0D8368A9F0 /* GenerateView.swift in Sources */,
 				BCA7F9B778767CD8C9ABE56F /* GlobalSearchField.swift in Sources */,
 				BDA5F9917A7244CF6D6B31F9 /* LibraryStore.swift in Sources */,
 				FC8BE13C4FBF829A5ED0D957 /* ManPageCatalogApp.swift in Sources */,
 				453067F1176D63813E3BECE1 /* ManualCatalog.swift in Sources */,
 				739B57F35D3ED2F6A446E9CC /* ManualDetailView.swift in Sources */,
+				B825A33AF007AE7015BE7FF3 /* ManualDiscovery.swift in Sources */,
 				BCBEC33796393BB2A408BE35 /* ManualHTML.swift in Sources */,
 				66416D026B5F378211223742 /* ManualPage.swift in Sources */,
 				51C41E25BDB3021166F484A1 /* ManualProcess.swift in Sources */,
@@ -351,6 +362,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				2B2FA040EA4E6D778E828A5C /* CatalogIntegrationTests.swift in Sources */,
+				52AC22CD1FB5E3801DD9B8E9 /* DiscoveryIntegrationTests.swift in Sources */,
 				314F88AAA993E32665C2E359 /* NativeBrowserIntegrationTests.swift in Sources */,
 				B859160EA1688D8258467E74 /* TerminalIntegrationTests.swift in Sources */,
 			);

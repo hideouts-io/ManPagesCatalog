@@ -40,7 +40,7 @@ struct ContentView: View {
                     }
                     Picker("Source", selection: $library.root) {
                         Text("All sources").tag(Optional<String>.none)
-                        ForEach(library.coverage) { source in Text(source.root.path).tag(Optional(source.root.path)) }
+                        ForEach(library.sourceRoots, id: \.self) { path in Text(path).tag(Optional(path)) }
                     }.labelsHidden().accessibilityLabel("Source filter").accessibilityIdentifier("sourceFilter")
                     Toggle("Include full text", isOn: $library.fullText).toggleStyle(.checkbox).accessibilityIdentifier("fullTextSearch")
                     if library.fullText { Text("Covers \(library.indexedCount) of \(library.pages.count) indexed manuals").font(.caption).foregroundStyle(.secondary) }
@@ -53,7 +53,7 @@ struct ContentView: View {
                         Text(result.page.description.isEmpty ? (result.page.problem != nil ? "Description unavailable — see Sources" : result.page.indexed ? "No description in this manual" : "Description not indexed yet") : result.page.description)
                             .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                         HStack {
-                            Text(result.page.root.path).lineLimit(1).truncationMode(.middle)
+                            Text("\(result.page.language) • \(result.page.locations.count) location(s) • \(result.page.root.path)").lineLimit(1).truncationMode(.middle)
                             Spacer()
                             Text(result.reason)
                         }.font(.system(size: 10)).foregroundStyle(.secondary)
@@ -111,7 +111,7 @@ struct ContentView: View {
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
-                Text(library.errorMessage ?? library.status).lineLimit(2).textSelection(.enabled).accessibilityIdentifier("libraryStatus")
+                Text(library.errorMessage ?? library.status).lineLimit(2).textSelection(.enabled).accessibilityIdentifier("libraryStatus").accessibilityValue(library.errorMessage ?? library.status)
                 Spacer()
                 if library.isIndexing { Button("Stop") { library.stop() }.accessibilityIdentifier("stopIndexing") }
             }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 6).background(.bar)
@@ -120,7 +120,7 @@ struct ContentView: View {
             reader.onReference = { name, section in followReference(name: name, section: section) }
             library.scan()
         }
-        .onChange(of: selectedID) { id in if let page = library.pages.first(where: { $0.id == id }) { open(page) } }
+        .onChange(of: selectedID) { id in if let page = library.results.first(where: { $0.id == id })?.page { open(page) } }
         .onChange(of: library.pages.count) { count in
             if count > 0, let reference = pendingReference {
                 pendingReference = nil

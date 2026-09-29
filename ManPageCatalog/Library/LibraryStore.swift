@@ -20,6 +20,8 @@ final class LibraryStore: ObservableObject {
     @Published var section: String? { didSet { search() } }
     @Published var root: String? { didSet { search() } }
     @Published var fullText = false { didSet { search() } }
+    @Published private(set) var scanProgress: DiscoveryProgress?
+    @Published private(set) var scanMode = "Standard Scan"
     @Published private(set) var additionalRoots: [String]
     private var index: ManualSearchIndex?
     private var indexingTask: Task<Void, Never>?
@@ -37,25 +39,61 @@ final class LibraryStore: ObservableObject {
     }
 
     var sections: [String] { Set(pages.map(\.section)).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+    var sourceRoots: [String] { Set(pages.flatMap(\.locations).map { $0.root.path } + coverage.map { $0.root.path }).sorted() }
     var indexedCount: Int { pages.filter(\.indexed).count }
     var problemPages: [ManualPage] { pages.filter { $0.problem != nil } }
 
     func scan() {
+        startScan(plan: { try await standardDiscoveryPlan(environment: ProcessInfo.processInfo.environment, additional: self.additionalRoots) }, title: "Standard Scan")
+    }
+
+    func deepScan() {
+        startScan(plan: { try deepDiscoveryPlan(additional: self.additionalRoots) }, title: "Deep Scan")
+    }
+
+    func scanSelectedRoots() {
+        startScan(plan: { DiscoveryPlan(roots: self.additionalRoots.map { URL(fileURLWithPath: $0) }, allowedNetworkRoots: self.additionalRoots.map { URL(fileURLWithPath: $0) }, exclusions: []) }, title: "Selected Folders")
+    }
+
+    private func startScan(plan: @escaping () async throws -> DiscoveryPlan, title: String) {
         indexingTask?.cancel()
         let request = UUID()
         operationID = request
         errorMessage = nil
         isIndexing = true
-        status = "Discovering manual directories…"
+        scanMode = title
+        scanProgress = nil
+        status = "\(title): discovering documentation…"
         indexingTask = Task {
             do {
                 if index == nil { index = try ManualSearchIndex(url: directory.appendingPathComponent("search.sqlite")) }
                 guard let index else { throw ManualToolError(message: "Search index was not initialized.") }
-                let roots = try await systemLibraryRoots(environment: ProcessInfo.processInfo.environment, additional: additionalRoots)
-                let scan = try await Task.detached(priority: .utility) { try scanLibrary(roots: roots) }.value
+                if pages.isEmpty {
+                    let inventory = directory.appendingPathComponent("discovery-v1.json")
+                    if FileManager.default.fileExists(atPath: inventory.path) {
+                        let saved = try loadDiscovery(inventory)
+                        pages = saved.pages
+                        coverage = saved.coverage
+                        search()
+                    }
+                }
+                let selectedPlan = try await plan()
+                try Task.checkCancellation()
+                let previous = pages
+                let worker = Task.detached(priority: .utility) {
+                    await discoverLibrary(plan: selectedPlan, previous: previous) { value in
+                        await self.discoveryProgress(value, request: request)
+                    }
+                }
+                let scan = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+                guard request == operationID else { return }
+                coverage = scan.coverage
+                scanProgress = nil
+                if scan.cancelled || Task.isCancelled { throw CancellationError() }
+                let discovered = mergingDiscovery(previous: previous, scan: scan)
                 let cache = Dictionary(try await index.metadata().map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
                 guard request == operationID else { return }
-                pages = scan.pages.map { page in
+                pages = discovered.map { page in
                     var updated = page
                     if let cached = cache[page.id], !page.fingerprint.isEmpty, cached.fingerprint == page.fingerprint, page.problem == nil {
                         updated.description = cached.description
@@ -64,7 +102,7 @@ final class LibraryStore: ObservableObject {
                     }
                     return updated
                 }
-                coverage = scan.coverage
+                try saveDiscovery()
                 search()
                 let pending = pages.filter { !$0.indexed && $0.problem == nil }.sorted { left, right in
                     let leftCommand = ["1", "8"].contains(String(left.section.prefix(1)))
@@ -78,20 +116,35 @@ final class LibraryStore: ObservableObject {
                 try await enrich(pending: pending, request: request, index: index)
                 guard request == operationID else { return }
                 isIndexing = false
-                status = "\(pages.count) manuals • \(indexedCount) indexed • \(problemPages.count) manuals with issues"
+                try saveDiscovery()
+                let issues = coverage.reduce(0) { $0 + $1.issues.count }
+                status = "\(title) finished • \(pages.count) unique manuals • \(indexedCount) indexed • \(issues) coverage issues; review Sources"
                 search()
             } catch is CancellationError {
                 guard request == operationID else { return }
                 isIndexing = false
-                status = "Indexing stopped • \(indexedCount) of \(pages.count) manuals indexed"
+                scanProgress = nil
+                status = "\(title) stopped • previous discoveries retained • \(indexedCount) indexed"
                 search()
             } catch {
                 guard request == operationID else { return }
                 isIndexing = false
-                errorMessage = error.localizedDescription
+                scanProgress = nil
+                errorMessage = "\(title) could not refresh the library: \(error.localizedDescription)"
                 status = "Library refresh failed; available results remain searchable"
             }
         }
+    }
+
+    private func discoveryProgress(_ value: DiscoveryProgress, request: UUID) {
+        guard request == operationID else { return }
+        scanProgress = value
+        status = "\(scanMode): \(value.directories) folders • \(value.files) files checked • \(value.manuals) manual locations"
+    }
+
+    private func saveDiscovery() throws {
+        let snapshot = LibraryScan(pages: pages, coverage: coverage, cancelled: false)
+        try JSONEncoder().encode(snapshot).write(to: directory.appendingPathComponent("discovery-v1.json"), options: .atomic)
     }
 
     func stop() { indexingTask?.cancel() }
@@ -99,7 +152,7 @@ final class LibraryStore: ObservableObject {
     func addRoot(_ url: URL) {
         if !additionalRoots.contains(url.path) { additionalRoots.append(url.path) }
         defaults.set(additionalRoots, forKey: "manualRoots")
-        scan()
+        scanSelectedRoots()
     }
 
     func removeRoot(_ path: String) {
@@ -119,7 +172,11 @@ final class LibraryStore: ObservableObject {
     }
 
     func reference(name: String, section: String, preferredRoot: URL?) -> ManualPage? {
-        let matches = pages.filter { $0.name == name && $0.section == section }
+        let matches = pages.compactMap { page -> ManualPage? in
+            let locations = page.locations.filter { $0.name == name && $0.section == section }
+            guard let location = locations.first(where: { $0.root == preferredRoot }) ?? locations.first else { return nil }
+            return page.at(location)
+        }
         return matches.first(where: { $0.root == preferredRoot }) ?? matches.first
     }
 

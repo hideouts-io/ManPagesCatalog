@@ -21,8 +21,10 @@ func manualKeywords(name: String) -> String {
 func rankedManuals(pages: [ManualPage], query: String, section: String?, root: String?, fullText: Set<String>) -> [ManualSearchResult] {
     let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let tokens = term.split(whereSeparator: \.isWhitespace).map(String.init)
-    return pages.compactMap { page -> ManualSearchResult? in
-        guard section == nil || page.section == section, root == nil || page.root.path == root else { return nil }
+    return pages.compactMap { original -> ManualSearchResult? in
+        let locations = original.locations.filter { (section == nil || $0.section == section) && (root == nil || pathContains(root: root!, path: $0.source.path)) }
+        guard let location = locations.first(where: { $0.name.lowercased() == term }) ?? locations.first(where: { !term.isEmpty && $0.name.lowercased().contains(term) }) ?? locations.first else { return nil }
+        let page = original.at(location)
         let name = page.name.lowercased()
         if term.isEmpty { return ManualSearchResult(page: page, reason: "", rank: 0) }
         if name == term || page.title.lowercased() == term { return ManualSearchResult(page: page, reason: "Exact name", rank: 0) }

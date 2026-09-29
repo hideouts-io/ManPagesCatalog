@@ -151,7 +151,19 @@ struct ManualDetailView: View {
         return VStack(alignment: .leading, spacing: 12) {
             Text("Original documentation").font(.headline)
             Text(page.source.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-            Text("Collection: \(page.root.path)").font(.caption).textSelection(.enabled)
+            Text("Collection: \(page.root.path)\nLanguage: \(page.language)").font(.caption).textSelection(.enabled)
+            if page.locations.count > 1 {
+                DisclosureGroup("\(page.locations.count) locations / aliases with identical content") {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(page.locations, id: \.source) { location in
+                                Text("\(location.name)(\(location.section)) • \(location.language)\n\(location.source.path)")
+                                    .font(.caption).textSelection(.enabled)
+                            }
+                        }
+                    }.frame(maxHeight: 180)
+                }.accessibilityIdentifier("manualLocations")
+            }
             Text("\(sectionLabel(page.section)) • version shown in the original manual header").font(.caption)
             Button("Reveal Source in Finder") { NSWorkspace.shared.activateFileViewerSelecting([page.source]) }
                 .accessibilityIdentifier("revealManualSource")

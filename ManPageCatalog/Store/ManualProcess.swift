@@ -49,10 +49,17 @@ func runManualProcess(executable: URL, arguments: [String], directory: URL, inpu
         let deadline = Date().addingTimeInterval(30)
         while process.isRunning {
             try Task.checkCancellation()
+            let size = try output.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            if size > 64 * 1024 * 1024 {
+                throw ManualToolError(message: "\(executable.path) exceeded the 64 MiB output limit.")
+            }
             if Date() > deadline {
                 throw ManualToolError(message: "\(executable.path) \(arguments.joined(separator: " ")) exceeded the 30-second timeout.")
             }
             try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        guard try output.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 <= 64 * 1024 * 1024 else {
+            throw ManualToolError(message: "\(executable.path) exceeded the 64 MiB output limit.")
         }
         let bytes = try Data(contentsOf: output)
         let diagnostic = String(decoding: try Data(contentsOf: errors), as: UTF8.self)
