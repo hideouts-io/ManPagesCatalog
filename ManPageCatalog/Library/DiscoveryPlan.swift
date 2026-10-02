@@ -1,6 +1,6 @@
 import Foundation
 
-struct DiscoveryPlan: Sendable {
+struct DiscoveryPlan: Codable, Sendable {
     let roots: [URL]
     let allowedNetworkRoots: [URL]
     let exclusions: [DiscoveryIssue]
@@ -46,7 +46,10 @@ func deepDiscoveryPlan(additional: [String]) throws -> DiscoveryPlan {
     guard let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeIsLocalKey], options: []) else {
         throw ManualToolError(message: "Cannot list mounted volumes. Add a folder explicitly and retry discovery.")
     }
-    var roots = [URL(fileURLWithPath: "/")]
+    // Yield useful manuals early; the filesystem pass still visits every other accessible directory.
+    var roots = ["/usr/share/man", "/opt/homebrew/share/man", "/opt/local/share/man", "/Library/Developer/CommandLineTools/usr/share/man"]
+        .filter { FileManager.default.fileExists(atPath: $0) }.map { URL(fileURLWithPath: $0) }
+    roots.append(URL(fileURLWithPath: "/"))
     var exclusions: [DiscoveryIssue] = []
     for volume in volumes.sorted(by: { $0.path < $1.path }) where volume.path != "/" {
         do {

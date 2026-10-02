@@ -112,17 +112,31 @@ func manualLanguage(_ file: URL) -> String {
     return locale
 }
 
+enum ManualCompression: String {
+    case gzip, compress, bzip2, xz, zstandard, lz4, lzip
+}
+
+/// Inspect container signatures so renamed compressed manuals are not missed by filename heuristics.
+func manualCompression(_ bytes: Data) -> ManualCompression? {
+    let signatures: [(ManualCompression, [UInt8])] = [
+        (.gzip, [0x1f, 0x8b]), (.compress, [0x1f, 0x9d]), (.bzip2, [0x42, 0x5a, 0x68]),
+        (.xz, [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]), (.zstandard, [0x28, 0xb5, 0x2f, 0xfd]),
+        (.lz4, [0x04, 0x22, 0x4d, 0x18]), (.lzip, [0x4c, 0x5a, 0x49, 0x50])
+    ]
+    return signatures.first(where: { bytes.starts(with: $0.1) })?.0
+}
+
 func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetworkRoots: [URL]) async throws -> ManualPage? {
     let filename = manualFilename(file)
-    let compressed = ["gz", "Z", "bz2"].contains(file.pathExtension)
+    let prefix = try manualPrefix(file)
+    let compression = manualCompression(prefix)
+    let compressed = compression != nil || ["gz", "Z", "bz2"].contains(file.pathExtension)
     if compressed && ["tar", "cpio"].contains(file.deletingPathExtension().pathExtension) {
         throw DiscoveryAccessError(kind: .excluded, message: "Archive contents are not traversed. Extract documentation into a selected folder to scan it.")
     }
-    if ["xz", "lzma", "zst", "lz", "lz4"].contains(file.pathExtension) {
-        guard filename != nil || ["man", "mdoc", "roff"].contains(file.deletingPathExtension().pathExtension) else { return nil }
-        throw DiscoveryAccessError(kind: .unsupported, message: "\(file.pathExtension) compression is not supported by the system renderer integration.")
+    if [.xz, .zstandard, .lz4, .lzip].contains(compression) || ["xz", "lzma", "zst", "lz", "lz4"].contains(file.pathExtension) {
+        throw DiscoveryAccessError(kind: .unsupported, message: "Cannot inspect \(compression?.rawValue ?? file.pathExtension) compressed content with the current decoder. It may contain documentation; extract it explicitly and select that folder.")
     }
-    let prefix = try manualPrefix(file)
     let prefixText = String(decoding: prefix, as: UTF8.self)
     let alias = prefixText.range(of: #"(?m)^\.so[ \t]+"#, options: .regularExpression) != nil
     guard filename != nil || compressed || roffHeader(prefix) != nil || alias else { return nil }
@@ -159,69 +173,82 @@ func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetwo
                       language: language, locations: [location], description: "", indexed: false, problem: problem)
 }
 
-/// Recurses hidden folders and packages; inode identity prevents directory cycles and overlapping-root work.
-/// Cancellation returns coverage but callers must not replace the previous catalog with partial discoveries.
-func discoverLibrary(plan: DiscoveryPlan, previous: [ManualPage], progress: @Sendable (DiscoveryProgress) async -> Void) async -> LibraryScan {
-    var pages: [ManualPage] = []
-    var coverage: [SourceCoverage] = []
-    var visited: [String: String] = [:]
+/// Checkpoints keep the unprocessed entry on the stack until processing succeeds or records an error.
+/// Interrupted reads are retried on resume; regular progress never prunes the previous inventory.
+func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
+                       progress: @Sendable (DiscoveryProgress) async -> Void,
+                       save: @Sendable (DiscoveryCheckpoint) async throws -> Void) async throws -> LibraryScan {
+    var state = checkpoint
     var cached: [String: ManualPage] = [:]
     for page in previous { for location in page.locations { cached[location.source.path] = page.at(location) } }
-    var totalDirectories = 0, totalFiles = 0
     var lastProgress = Date.distantPast
-    for root in plan.roots {
-        var stack = [root]
-        var issues: [DiscoveryIssue] = []
-        let start = pages.count, startDirectories = totalDirectories, startFiles = totalFiles
-        while let url = stack.popLast(), !Task.isCancelled {
+    var lastSave = Date.distantPast
+    for index in state.roots.indices {
+        let root = state.roots[index].root
+        while let url = state.roots[index].pending.last, !Task.isCancelled {
             do {
-                try requireDiscoveryVolume(url: url, allowedNetworkRoots: plan.allowedNetworkRoots)
-                let state = try materializedFileState(url)
-                if state.directory {
-                    if let first = visited[state.identity] {
-                        issues.append(DiscoveryIssue(path: url.path, kind: .excluded, reason: "Directory already traversed at \(first); avoids duplicate traversal and link cycles."))
-                        continue
-                    }
-                    // Mark only after successful enumeration so an inaccessible alias cannot hide a usable path.
-                    let children = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [])
-                    visited[state.identity] = url.path
-                    totalDirectories += 1
-                    stack += children.map { url.appendingPathComponent($0.lastPathComponent) }.sorted { $0.path > $1.path }
-                } else if state.regular {
-                    totalFiles += 1
-                    if let old = cached[url.path], old.problem == nil || old.indexed, old.locations.first(where: { $0.source == url })?.stamp == "direct:" + state.stamp {
-                        var reused = old
-                        reused.locations = [ManualLocation(source: url, root: root, name: old.name, section: old.section, language: old.language, stamp: "direct:" + state.stamp)]
-                        pages.append(reused.at(reused.locations[0]))
-                    } else if let page = try await discoveredManual(file: url, root: root, state: state, allowedNetworkRoots: plan.allowedNetworkRoots) {
-                        pages.append(page)
-                        if let problem = page.problem { issues.append(DiscoveryIssue(path: url.path, kind: .unsupported, reason: problem)) }
+                try requireDiscoveryVolume(url: url, allowedNetworkRoots: state.plan.allowedNetworkRoots)
+                let file = try materializedFileState(url)
+                if file.directory {
+                    if let first = state.visited[file.identity] {
+                        state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .excluded, reason: "Directory already traversed at \(first); avoids duplicate traversal and link cycles."))
+                        state.roots[index].pending.removeLast()
+                    } else {
+                        let children = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [])
+                        state.visited[file.identity] = url.path
+                        state.roots[index].directories += 1
+                        state.roots[index].pending.removeLast()
+                        state.roots[index].pending += children.map { url.appendingPathComponent($0.lastPathComponent) }.sorted { $0.path > $1.path }
                     }
                 } else {
-                    issues.append(DiscoveryIssue(path: url.path, kind: .excluded, reason: "Special filesystem entry; sockets, devices and pipes are never read."))
+                    if file.regular {
+                        let page: ManualPage?
+                        if let old = cached[url.path], old.problem == nil || old.indexed,
+                           old.locations.first(where: { $0.source == url })?.stamp == "direct:" + file.stamp {
+                            var reused = old
+                            reused.locations = [ManualLocation(source: url, root: root, name: old.name, section: old.section, language: old.language, stamp: "direct:" + file.stamp)]
+                            page = reused.at(reused.locations[0])
+                        } else {
+                            page = try await discoveredManual(file: url, root: root, state: file, allowedNetworkRoots: state.plan.allowedNetworkRoots)
+                        }
+                        if let page {
+                            state.pages.append(page)
+                            state.roots[index].manuals += 1
+                            if let problem = page.problem, !page.indexed { state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .unsupported, reason: problem)) }
+                        }
+                        state.roots[index].files += 1
+                    } else {
+                        state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .excluded, reason: "Special filesystem entry; sockets, devices and pipes are never read."))
+                    }
+                    state.roots[index].pending.removeLast()
                 }
             } catch is CancellationError { break }
-            catch { issues.append(discoveryIssue(url: url, error: error)) }
+            catch {
+                state.roots[index].issues.append(discoveryIssue(url: url, error: error))
+                state.roots[index].pending.removeLast()
+            }
             if Date().timeIntervalSince(lastProgress) > 0.15 {
-                await progress(DiscoveryProgress(path: url.path, directories: totalDirectories, files: totalFiles, manuals: pages.count))
+                await progress(DiscoveryProgress(path: url.path, directories: state.roots.reduce(0) { $0 + $1.directories },
+                                                  files: state.roots.reduce(0) { $0 + $1.files }, manuals: state.pages.count))
                 lastProgress = Date()
             }
+            if Date().timeIntervalSince(lastSave) > 5 {
+                state.updated = Date()
+                try await save(state)
+                lastSave = Date()
+            }
         }
-        coverage.append(SourceCoverage(root: root, count: pages.count - start, directories: totalDirectories - startDirectories,
-                                       files: totalFiles - startFiles, completed: !Task.isCancelled && stack.isEmpty, issues: issues))
         if Task.isCancelled { break }
     }
-    let attempted = Set(coverage.map { $0.root.path })
-    for root in plan.roots where !attempted.contains(root.path) {
-        coverage.append(SourceCoverage(root: root, count: 0, directories: 0, files: 0, completed: false,
-                                       issues: [DiscoveryIssue(path: root.path, kind: .excluded, reason: "Not scanned: operation cancelled before reaching this root.")]))
-    }
-    for issue in plan.exclusions {
-        coverage.append(SourceCoverage(root: URL(fileURLWithPath: issue.path), count: 0, directories: 0, files: 0, completed: false, issues: [issue]))
-    }
-    return LibraryScan(pages: groupedManuals(pages), coverage: coverage, cancelled: Task.isCancelled)
+    state.updated = Date()
+    try await save(state)
+    return state.snapshot
+}
+
+func discoverLibrary(plan: DiscoveryPlan, previous: [ManualPage], progress: @Sendable (DiscoveryProgress) async -> Void) async throws -> LibraryScan {
+    try await continueDiscovery(checkpoint: newDiscoveryCheckpoint(plan: plan, title: "Discovery"), previous: previous, progress: progress, save: { _ in })
 }
 
 func scanLibrary(roots: [URL]) async throws -> LibraryScan {
-    await discoverLibrary(plan: DiscoveryPlan(roots: roots, allowedNetworkRoots: [], exclusions: []), previous: [], progress: { _ in })
+    try await discoverLibrary(plan: DiscoveryPlan(roots: roots, allowedNetworkRoots: [], exclusions: []), previous: [], progress: { _ in })
 }

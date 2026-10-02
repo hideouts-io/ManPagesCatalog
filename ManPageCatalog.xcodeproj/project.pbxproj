@@ -21,6 +21,7 @@
 		52AC22CD1FB5E3801DD9B8E9 /* DiscoveryIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2534D0F63D6EC5F6C1765E5B /* DiscoveryIntegrationTests.swift */; };
 		5674B144CFA27DA7E15CE2C7 /* PDFKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 936483F79232714C089DDDEE /* PDFKit.framework */; };
 		56FA7A3D17807BD81FD234CC /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AE789379FD185305D523D6B /* ContentView.swift */; };
+		5F93AF93EA06EAF9210A93A1 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = A07B74E84C68B1F3348CD724 /* AppIcon.icns */; };
 		66416D026B5F378211223742 /* ManualPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8D6176FEC551191B7FC43F /* ManualPage.swift */; };
 		739B57F35D3ED2F6A446E9CC /* ManualDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94B5D632E956F98325ECC4A7 /* ManualDetailView.swift */; };
 		88158E9DB9DCAF0D8368A9F0 /* GenerateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC81C30F634E2641B421371 /* GenerateView.swift */; };
@@ -35,6 +36,7 @@
 		BCBEC33796393BB2A408BE35 /* ManualHTML.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6E889097857520F0B0EEECA /* ManualHTML.swift */; };
 		BDA5F9917A7244CF6D6B31F9 /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06864A512AF71966B77493E /* LibraryStore.swift */; };
 		C71541D666BA7B23B259E9CB /* PDFDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */; };
+		D45AED488F46BD14D493D58C /* DiscoveryCheckpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9ED93D94DC3205BE66E2273 /* DiscoveryCheckpoint.swift */; };
 		DF531142D27B45B44B75B1D3 /* ManualSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079EF1B02AF7AF19D3A98FBA /* ManualSearch.swift */; };
 		E048704D6E473855A54D5CF8 /* CommandDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FD5C5BFD59DDDC45DFB4822 /* CommandDraft.swift */; };
 		F24549BA1AF555D4EFD05949 /* ManualSearchIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7BF7D8795E54FE58F99749 /* ManualSearchIndex.swift */; };
@@ -73,6 +75,7 @@
 		936483F79232714C089DDDEE /* PDFKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PDFKit.framework; path = System/Library/Frameworks/PDFKit.framework; sourceTree = SDKROOT; };
 		94B5D632E956F98325ECC4A7 /* ManualDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualDetailView.swift; sourceTree = "<group>"; };
 		9B8D6176FEC551191B7FC43F /* ManualPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualPage.swift; sourceTree = "<group>"; };
+		A07B74E84C68B1F3348CD724 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		A2101FCFC3968030A1957B9D /* ManualDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualDiscovery.swift; sourceTree = "<group>"; };
 		A6E889097857520F0B0EEECA /* ManualHTML.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualHTML.swift; sourceTree = "<group>"; };
 		B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDetailView.swift; sourceTree = "<group>"; };
@@ -88,6 +91,7 @@
 		F0D5ECA1252DCDDA1CA5DE4F /* SwiftTerm-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "SwiftTerm-LICENSE.txt"; sourceTree = "<group>"; };
 		F1C14685E3C4CF5BA4329360 /* TerminalIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalIntegrationTests.swift; sourceTree = "<group>"; };
 		F3838CF2F21703BC935D9B1A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F9ED93D94DC3205BE66E2273 /* DiscoveryCheckpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryCheckpoint.swift; sourceTree = "<group>"; };
 		FC99C3E6091C76F34E5F48D4 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -136,6 +140,7 @@
 		2616E826BF7F7D571853B6EB /* Library */ = {
 			isa = PBXGroup;
 			children = (
+				F9ED93D94DC3205BE66E2273 /* DiscoveryCheckpoint.swift */,
 				6A5445E9B2E6B9495348CA7E /* DiscoveryPlan.swift */,
 				C06864A512AF71966B77493E /* LibraryStore.swift */,
 				A2101FCFC3968030A1957B9D /* ManualDiscovery.swift */,
@@ -188,6 +193,7 @@
 		74A51CB868CFBEBA893EF3C1 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				A07B74E84C68B1F3348CD724 /* AppIcon.icns */,
 				F0D5ECA1252DCDDA1CA5DE4F /* SwiftTerm-LICENSE.txt */,
 			);
 			path = Resources;
@@ -319,6 +325,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5F93AF93EA06EAF9210A93A1 /* AppIcon.icns in Resources */,
 				470DCB11969529D6856DE178 /* SwiftTerm-LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -335,6 +342,7 @@
 				4065298A68C4AFCF7CEAB456 /* CatalogStore.swift in Sources */,
 				E048704D6E473855A54D5CF8 /* CommandDraft.swift in Sources */,
 				56FA7A3D17807BD81FD234CC /* ContentView.swift in Sources */,
+				D45AED488F46BD14D493D58C /* DiscoveryCheckpoint.swift in Sources */,
 				1A8C7590185043EE18AC7B81 /* DiscoveryPlan.swift in Sources */,
 				88158E9DB9DCAF0D8368A9F0 /* GenerateView.swift in Sources */,
 				BCA7F9B778767CD8C9ABE56F /* GlobalSearchField.swift in Sources */,

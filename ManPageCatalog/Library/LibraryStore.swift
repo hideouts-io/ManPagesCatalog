@@ -1,6 +1,14 @@
 import Foundation
 import Combine
 
+enum LibraryPhase: String {
+    case ready = "Ready"
+    case discovering = "Discovering files"
+    case indexing = "Indexing descriptions & full text"
+    case paused = "Paused"
+    case needsAttention = "Needs attention"
+}
+
 struct ManualIndexOutcome: Sendable {
     let id: String
     let description: String
@@ -16,6 +24,12 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var status = "Ready to discover installed manuals"
     @Published private(set) var errorMessage: String?
     @Published private(set) var isIndexing = false
+    @Published private(set) var phase: LibraryPhase = .ready
+    @Published private(set) var resumableScan = false
+    @Published private(set) var pendingLocations = 0
+    @Published private(set) var checkpointDate: Date?
+    @Published private(set) var indexCompleted = 0
+    @Published private(set) var indexTotal = 0
     @Published var query = "" { didSet { search() } }
     @Published var section: String? { didSet { search() } }
     @Published var root: String? { didSet { search() } }
@@ -31,10 +45,13 @@ final class LibraryStore: ObservableObject {
     private var resultsID: UUID?
     private let directory: URL
     private let defaults: UserDefaults
+    private let checkpointFile: DiscoveryCheckpointFile
+    private var opened = false
 
     init(directory: URL, defaults: UserDefaults) {
         self.directory = directory
         self.defaults = defaults
+        checkpointFile = DiscoveryCheckpointFile(url: directory.appendingPathComponent("scan-checkpoint-v1.json"))
         additionalRoots = defaults.stringArray(forKey: "manualRoots") ?? []
     }
 
@@ -43,97 +60,209 @@ final class LibraryStore: ObservableObject {
     var indexedCount: Int { pages.filter(\.indexed).count }
     var problemPages: [ManualPage] { pages.filter { $0.problem != nil } }
 
+    /// Opening a saved library must not silently replace an interrupted Deep Scan with a Standard Scan.
+    func openLibrary() {
+        guard !opened else { return }
+        opened = true
+        let request = operationID
+        indexingTask = Task {
+            do {
+                try initializeLibrary()
+                let saved = try await checkpointFile.load()
+                guard request == operationID else { return }
+                if let saved {
+                    resumableScan = saved.pendingCount > 0
+                    pendingLocations = saved.pendingCount
+                    checkpointDate = saved.updated
+                    scanMode = saved.title
+                    coverage = saved.snapshot.coverage
+                    let retained = Dictionary(pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                    pages = mergingDiscovery(previous: pages, scan: saved.snapshot).map { page in
+                        var value = page
+                        if let old = retained[page.id] {
+                            value.description = old.description; value.indexed = old.indexed; value.problem = old.problem
+                        }
+                        return value
+                    }
+                    phase = saved.pendingCount > 0 ? .paused : .ready
+                    status = saved.pendingCount > 0 ? "Saved \(saved.title) • \(pendingLocations) queued locations • Resume in Scan & Sources" : "Discovery saved • \(pages.count) manuals ready • Continue indexing in Scan & Sources"
+                    search()
+                } else if pages.isEmpty { scan() }
+                else {
+                    status = "\(pages.count) manuals ready • \(indexedCount) indexed • Scan to refresh"
+                    search()
+                }
+            } catch {
+                guard request == operationID else { return }
+                errorMessage = error.localizedDescription
+                status = "Library needs attention; review Scan & Sources"
+            }
+        }
+    }
+
+    private func initializeLibrary() throws {
+        if index == nil { index = try ManualSearchIndex(url: directory.appendingPathComponent("search.sqlite")) }
+        if pages.isEmpty {
+            let inventory = directory.appendingPathComponent("discovery-v1.json")
+            if FileManager.default.fileExists(atPath: inventory.path) {
+                let saved = try loadDiscovery(inventory)
+                pages = saved.pages
+                coverage = saved.coverage
+                search()
+            }
+        }
+    }
+
     func scan() {
-        startScan(plan: { try await standardDiscoveryPlan(environment: ProcessInfo.processInfo.environment, additional: self.additionalRoots) }, title: "Standard Scan")
+        startScan(checkpoint: {
+            newDiscoveryCheckpoint(plan: try await standardDiscoveryPlan(environment: ProcessInfo.processInfo.environment, additional: self.additionalRoots), title: "Standard Scan")
+        })
     }
 
     func deepScan() {
-        startScan(plan: { try deepDiscoveryPlan(additional: self.additionalRoots) }, title: "Deep Scan")
+        startScan(checkpoint: { newDiscoveryCheckpoint(plan: try deepDiscoveryPlan(additional: self.additionalRoots), title: "Deep Scan") })
     }
 
     func scanSelectedRoots() {
-        startScan(plan: { DiscoveryPlan(roots: self.additionalRoots.map { URL(fileURLWithPath: $0) }, allowedNetworkRoots: self.additionalRoots.map { URL(fileURLWithPath: $0) }, exclusions: []) }, title: "Selected Folders")
+        startScan(checkpoint: {
+            newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: self.additionalRoots.map { URL(fileURLWithPath: $0) }, allowedNetworkRoots: self.additionalRoots.map { URL(fileURLWithPath: $0) }, exclusions: []), title: "Selected Folders")
+        })
     }
 
-    private func startScan(plan: @escaping () async throws -> DiscoveryPlan, title: String) {
+    func resumeScan() {
+        startScan(checkpoint: {
+            guard let saved = try await self.checkpointFile.load() else {
+                throw ManualToolError(message: "No saved scan exists. Start a Standard or Deep Scan.")
+            }
+            return saved
+        })
+    }
+
+    private func startScan(checkpoint: @escaping () async throws -> DiscoveryCheckpoint) {
         indexingTask?.cancel()
         let request = UUID()
         operationID = request
         errorMessage = nil
         isIndexing = true
-        scanMode = title
+        phase = .discovering
         scanProgress = nil
-        status = "\(title): discovering documentation…"
+        status = "Preparing discovery…"
         indexingTask = Task {
             do {
-                if index == nil { index = try ManualSearchIndex(url: directory.appendingPathComponent("search.sqlite")) }
-                guard let index else { throw ManualToolError(message: "Search index was not initialized.") }
-                if pages.isEmpty {
-                    let inventory = directory.appendingPathComponent("discovery-v1.json")
-                    if FileManager.default.fileExists(atPath: inventory.path) {
-                        let saved = try loadDiscovery(inventory)
-                        pages = saved.pages
-                        coverage = saved.coverage
-                        search()
-                    }
-                }
-                let selectedPlan = try await plan()
                 try Task.checkCancellation()
-                let previous = pages
-                let worker = Task.detached(priority: .utility) {
-                    await discoverLibrary(plan: selectedPlan, previous: previous) { value in
-                        await self.discoveryProgress(value, request: request)
-                    }
-                }
-                let scan = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+                try initializeLibrary()
+                guard let index else { throw ManualToolError(message: "Search index was not initialized.") }
+                let selected = try await checkpoint()
+                try Task.checkCancellation()
                 guard request == operationID else { return }
-                coverage = scan.coverage
+                scanMode = selected.title
+                await checkpointFile.activate(request)
+                let cache = Dictionary(try await index.metadata().map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
+                let previous = pages
+                let file = checkpointFile
+                let worker = Task.detached(priority: .utility) {
+                    try await continueDiscovery(checkpoint: selected, previous: previous, progress: { value in
+                        await self.discoveryProgress(value, request: request)
+                    }, save: { saved in
+                        try await file.save(saved, request: request)
+                        let snapshot = saved.snapshot
+                        let discovered = mergingDiscovery(previous: previous, scan: snapshot).map { page in
+                            var updated = page
+                            if let cached = cache[page.id], cached.fingerprint == page.fingerprint, page.problem == nil {
+                                updated.description = cached.description
+                                updated.indexed = true
+                                updated.problem = cached.diagnostic.isEmpty ? nil : cached.diagnostic
+                            }
+                            return updated
+                        }
+                        try await self.acceptDiscovery(saved: saved, snapshot: snapshot, pages: discovered, request: request)
+                    })
+                }
+                let scan = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+                guard request == operationID else { return }
                 scanProgress = nil
                 if scan.cancelled || Task.isCancelled { throw CancellationError() }
-                let discovered = mergingDiscovery(previous: previous, scan: scan)
-                let cache = Dictionary(try await index.metadata().map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
-                guard request == operationID else { return }
-                pages = discovered.map { page in
-                    var updated = page
-                    if let cached = cache[page.id], !page.fingerprint.isEmpty, cached.fingerprint == page.fingerprint, page.problem == nil {
-                        updated.description = cached.description
-                        updated.indexed = true
-                        updated.problem = cached.diagnostic.isEmpty ? nil : cached.diagnostic
-                    }
-                    return updated
-                }
-                try saveDiscovery()
-                search()
-                let pending = pages.filter { !$0.indexed && $0.problem == nil }.sorted { left, right in
-                    let leftCommand = ["1", "8"].contains(String(left.section.prefix(1)))
-                    let rightCommand = ["1", "8"].contains(String(right.section.prefix(1)))
-                    if leftCommand != rightCommand { return leftCommand }
-                    let leftSystem = left.root.path == "/usr/share/man"
-                    let rightSystem = right.root.path == "/usr/share/man"
-                    if leftSystem != rightSystem { return leftSystem }
-                    return left.id < right.id
-                }
-                try await enrich(pending: pending, request: request, index: index)
-                guard request == operationID else { return }
-                isIndexing = false
-                try saveDiscovery()
-                let issues = coverage.reduce(0) { $0 + $1.issues.count }
-                status = "\(title) finished • \(pages.count) unique manuals • \(indexedCount) indexed • \(issues) coverage issues; review Sources"
-                search()
+                try await checkpointFile.remove(request: request)
+                resumableScan = false
+                try await finishIndexing(request: request, index: index)
             } catch is CancellationError {
                 guard request == operationID else { return }
                 isIndexing = false
                 scanProgress = nil
-                status = "\(title) stopped • previous discoveries retained • \(indexedCount) indexed"
+                let wasIndexing = phase == .indexing
+                phase = .paused
+                status = wasIndexing ? "Indexing paused • \(indexedCount) of \(pages.count) manuals indexed • reading and name search are ready" : "\(scanMode) paused • \(pages.count) manuals retained • \(pendingLocations) queued locations"
                 search()
             } catch {
                 guard request == operationID else { return }
                 isIndexing = false
                 scanProgress = nil
-                errorMessage = "\(title) could not refresh the library: \(error.localizedDescription)"
-                status = "Library refresh failed; available results remain searchable"
+                phase = .needsAttention
+                errorMessage = "Library refresh failed: \(error.localizedDescription)"
+                status = "Available results remain searchable; review Scan & Sources"
             }
         }
+    }
+
+    private func acceptDiscovery(saved: DiscoveryCheckpoint, snapshot: LibraryScan, pages: [ManualPage], request: UUID) throws {
+        guard request == operationID else { return }
+        self.pages = pages
+        coverage = snapshot.coverage
+        pendingLocations = saved.pendingCount
+        checkpointDate = saved.updated
+        resumableScan = saved.pendingCount > 0
+        try saveDiscovery()
+        search()
+    }
+
+    func continueIndexing() {
+        guard !isIndexing else { return }
+        let request = UUID()
+        operationID = request
+        isIndexing = true
+        errorMessage = nil
+        indexingTask = Task {
+            do {
+                try initializeLibrary()
+                guard let index else { throw ManualToolError(message: "Search index was not initialized.") }
+                try await finishIndexing(request: request, index: index)
+            } catch is CancellationError {
+                guard request == operationID else { return }
+                isIndexing = false
+                phase = .paused
+                status = "Indexing paused • \(indexedCount) of \(pages.count) manuals indexed • reading and name search are ready"
+            } catch {
+                guard request == operationID else { return }
+                isIndexing = false
+                phase = .needsAttention
+                errorMessage = "Indexing failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func finishIndexing(request: UUID, index: ManualSearchIndex) async throws {
+        phase = .indexing
+        let pending = pages.filter { !$0.indexed && $0.problem == nil }.sorted { left, right in
+            let leftCommand = ["1", "8"].contains(String(left.section.prefix(1)))
+            let rightCommand = ["1", "8"].contains(String(right.section.prefix(1)))
+            if leftCommand != rightCommand { return leftCommand }
+            if (left.root.path == "/usr/share/man") != (right.root.path == "/usr/share/man") { return left.root.path == "/usr/share/man" }
+            return left.id < right.id
+        }
+        indexCompleted = 0
+        indexTotal = pending.count
+        do { try await enrich(pending: pending, request: request, index: index) }
+        catch {
+            if request == operationID { try saveDiscovery(); search() }
+            throw error
+        }
+        guard request == operationID else { return }
+        isIndexing = false
+        phase = .ready
+        try saveDiscovery()
+        let issues = coverage.reduce(0) { $0 + $1.issues.count }
+        status = "\(pages.count) unique manuals • \(indexedCount) indexed • \(issues) coverage notices; review Scan & Sources"
+        search()
     }
 
     private func discoveryProgress(_ value: DiscoveryProgress, request: UUID) {
@@ -143,7 +272,7 @@ final class LibraryStore: ObservableObject {
     }
 
     private func saveDiscovery() throws {
-        let snapshot = LibraryScan(pages: pages, coverage: coverage, cancelled: false)
+        let snapshot = LibraryScan(pages: pages, coverage: coverage, cancelled: resumableScan)
         try JSONEncoder().encode(snapshot).write(to: directory.appendingPathComponent("discovery-v1.json"), options: .atomic)
     }
 
@@ -211,8 +340,9 @@ final class LibraryStore: ObservableObject {
                 updated.indexed = value.indexed
                 return updated
             }
-            status = "Indexing \(min(offset + 4, pending.count)) of \(pending.count) changed manuals • names are searchable now"
-            if offset % 128 == 124 { search() }
+            indexCompleted = min(offset + 4, pending.count)
+            status = "Indexing descriptions & full text: \(min(offset + 4, pending.count)) of \(pending.count) changed manuals • names are searchable now"
+            if offset % 128 == 124 { try saveDiscovery(); search() }
         }
     }
 

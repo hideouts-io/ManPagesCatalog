@@ -4,6 +4,7 @@ struct SourcesView: View {
     @EnvironmentObject var library: LibraryStore
     @Environment(\.openWindow) private var openWindow
     @State private var reportError: String?
+    @AppStorage("manualAppearance") private var appearance = "system"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -15,22 +16,50 @@ struct SourcesView: View {
                     NotificationCenter.default.post(name: .searchCommands, object: nil)
                 }.accessibilityIdentifier("sourcesSearch")
             }
-            Text("Standard Scan searches configured and common manual folders. Deep Scan explores local volumes, including hidden folders and apps. Network folders require explicit selection; cloud-only files remain undownloaded.")
-                .foregroundStyle(.secondary)
-            HStack {
-                Button("Standard Scan") { library.scan() }.disabled(library.isIndexing).accessibilityIdentifier("standardScan")
-                Button("Deep Scan") { library.deepScan() }.disabled(library.isIndexing).accessibilityIdentifier("deepScan")
-                if library.isIndexing { Button("Cancel Scan / Indexing") { library.stop() }.accessibilityIdentifier("sourcesStop") }
-                Spacer()
-                Button("Export Coverage…") { exportCoverage() }.accessibilityIdentifier("exportCoverage")
+            HStack(alignment: .top, spacing: 12) {
+                scanChoice(title: "Standard Scan", explanation: "Start here. Searches configured manual folders, package managers and known developer SDKs.", identifier: "standardScan", action: library.scan)
+                scanChoice(title: "Deep Scan", explanation: "Looks throughout local mounted volumes, including hidden folders and apps. Can take a long time; pause and resume anytime.", identifier: "deepScan", action: library.deepScan)
             }
-            Text(library.status).font(.caption).accessibilityIdentifier("sourceIndexStatus").accessibilityValue(library.status)
-            if let progress = library.scanProgress {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text(progress.path).font(.system(.caption, design: .monospaced)).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
-                        .accessibilityIdentifier("discoveryCurrentPath").accessibilityLabel("Current scanning location").accessibilityValue(progress.path)
-                }
+            Text("Network folders are included only when you select them. Cloud-only files are skipped; scanning never downloads them or runs documented commands.")
+                .font(.caption).foregroundStyle(.secondary)
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Label(library.phase.rawValue, systemImage: library.phase == .indexing ? "text.magnifyingglass" : "folder.badge.gearshape").font(.headline)
+                            .accessibilityIdentifier("scanPhase").accessibilityValue(library.phase.rawValue)
+                        Spacer()
+                        if library.isIndexing {
+                            Button(library.phase == .discovering ? "Pause Scan" : "Pause Indexing") { library.stop() }.accessibilityIdentifier("sourcesStop")
+                        } else {
+                            if library.resumableScan { Button("Resume Discovery") { library.resumeScan() }.accessibilityIdentifier("resumeDiscovery") }
+                            if library.pages.contains(where: { !$0.indexed && $0.problem == nil }) {
+                                Button("Index Discovered Manuals") { library.continueIndexing() }.accessibilityIdentifier("resumeIndexing")
+                            }
+                        }
+                    }
+                    Text(library.status).font(.caption).textSelection(.enabled).accessibilityIdentifier("sourceIndexStatus").accessibilityValue(library.status)
+                    if library.phase == .indexing {
+                        ProgressView(value: Double(library.indexCompleted), total: Double(max(1, library.indexTotal)))
+                            .accessibilityIdentifier("descriptionIndexProgress")
+                        Text("Names and reading are ready. Descriptions and full-text search become available as each manual is indexed.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let progress = library.scanProgress {
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text(progress.path).font(.system(.caption, design: .monospaced)).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+                                .accessibilityIdentifier("discoveryCurrentPath").accessibilityLabel("Current scanning location").accessibilityValue(progress.path)
+                        }
+                    }
+                    if library.resumableScan, let date = library.checkpointDate {
+                        HStack {
+                            Text("\(library.pendingLocations) queued locations • checkpoint saved")
+                            Text(date, style: .time)
+                        }.font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("checkpointStatus")
+                        Text("Resume continues the saved traversal. A new scan replaces that checkpoint and rechecks previously visited folders. Queued folder contents are not counted yet.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
+                    .accessibilityElement(children: .contain).accessibilityIdentifier("scanProgressPanel")
             }
             if let error = library.errorMessage ?? reportError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             ScrollView {
@@ -49,7 +78,10 @@ struct SourcesView: View {
                                 .accessibilityIdentifier("scanSelectedRoots")
                         }
                     }
-                    Section("Latest scan coverage — exclusions mean coverage is incomplete") {
+                    Section("Measured coverage") {
+                        Text("Checked folders and files are counted below. Pending, excluded, inaccessible, failed and unsupported paths are reported separately; these counts do not prove complete-machine coverage.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if library.coverage.isEmpty { Text("No scan coverage yet. Choose a scan above to start.").foregroundStyle(.secondary) }
                         ForEach(library.coverage) { source in
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(source.root.path).font(.system(.body, design: .monospaced)).textSelection(.enabled)
@@ -77,9 +109,27 @@ struct SourcesView: View {
                     }
                 }
             }.accessibilityIdentifier("sourceCoverage")
+            HStack {
+                Picker("Appearance", selection: $appearance) {
+                    Text("System").tag("system").accessibilityIdentifier("appearanceSystem")
+                    Text("Light").tag("light").accessibilityIdentifier("appearanceLight")
+                    Text("Dark").tag("dark").accessibilityIdentifier("appearanceDark")
+                }.pickerStyle(.segmented).frame(width: 300).accessibilityIdentifier("appAppearance")
+                Spacer()
+                Button("Export Coverage…") { exportCoverage() }.accessibilityIdentifier("exportCoverage")
+            }
             Text("Original files and PDF catalogs are unchanged. Results from earlier scans stay available when a location is inaccessible or a scan is cancelled. Deep scanning can take time; no complete-machine guarantee is made.")
                 .font(.caption).foregroundStyle(.secondary)
-        }.padding(20).frame(minWidth: 740, minHeight: 560)
+        }.padding(20).frame(minWidth: 780, minHeight: 700)
+    }
+
+    private func scanChoice(title: String, explanation: String, identifier: String, action: @escaping () -> Void) -> some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Button(title, action: action).disabled(library.isIndexing).accessibilityIdentifier(identifier)
+                Text(explanation).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
+        }
     }
 
     private func addFolder() {

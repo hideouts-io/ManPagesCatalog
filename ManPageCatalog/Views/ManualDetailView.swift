@@ -48,7 +48,9 @@ struct ManualDetailView: View {
                 }
             } else {
                 VStack(spacing: 16) {
-                    Image(systemName: "books.vertical").font(.system(size: 54)).foregroundStyle(.tint)
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable().interpolation(.high).scaledToFit().frame(width: 96, height: 96)
+                        .accessibilityHidden(true)
                     Text("Your Mac’s manuals, within reach").font(.title2).fontWeight(.semibold)
                     Text("Find a command, understand its options, and follow its references.\nSearch by name or try a topic such as network.")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -107,12 +109,12 @@ struct ManualDetailView: View {
                             }.padding()
                         }.frame(width: 280, height: 320)
                     }
-                Button { reader.showFind = true; findFocused = true } label: { Image(systemName: "magnifyingglass") }
+                Button { reader.showFind = true; findFocused = true } label: { Label("Find", systemImage: "magnifyingglass") }
                     .accessibilityLabel("Find in Page").accessibilityIdentifier("showReaderFind")
             }
             if !page.description.isEmpty { Text(page.description).foregroundStyle(.secondary).textSelection(.enabled) }
             HStack {
-                Button { showSource.toggle() } label: { Label("Source & paths", systemImage: "info.circle") }
+                Button { showSource.toggle() } label: { Label("Source Details", systemImage: "info.circle") }
                     .accessibilityIdentifier("sourceDetails")
                     .popover(isPresented: $showSource) { sourceDetails(page).padding().frame(width: 440) }
                 Spacer()
@@ -151,7 +153,7 @@ struct ManualDetailView: View {
         return VStack(alignment: .leading, spacing: 12) {
             Text("Original documentation").font(.headline)
             Text(page.source.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-            Text("Collection: \(page.root.path)\nLanguage: \(page.language)").font(.caption).textSelection(.enabled)
+            Text("Collection: \(page.root.path)\nLanguage: \(page.language == "unspecified" ? "Not declared" : page.language)").font(.caption).textSelection(.enabled)
             if page.locations.count > 1 {
                 DisclosureGroup("\(page.locations.count) locations / aliases with identical content") {
                     ScrollView {
@@ -164,10 +166,12 @@ struct ManualDetailView: View {
                     }.frame(maxHeight: 180)
                 }.accessibilityIdentifier("manualLocations")
             }
-            Text("\(sectionLabel(page.section)) • version shown in the original manual header").font(.caption)
+            Text("Identical content is grouped above. Different content versions remain separate search results; compare their original headers and source paths.\n\(sectionLabel(page.section))").font(.caption)
             Button("Reveal Source in Finder") { NSWorkspace.shared.activateFileViewerSelecting([page.source]) }
                 .accessibilityIdentifier("revealManualSource")
-            if !executable.isEmpty {
+            if executable.isEmpty {
+                Text("No executable verified on this app’s PATH. A manual can document an API or a command that is not installed.").font(.caption).foregroundStyle(.secondary)
+            } else {
                 Divider()
                 Text("Executable found on PATH").font(.headline)
                 Text(executable).font(.system(.caption, design: .monospaced)).textSelection(.enabled)

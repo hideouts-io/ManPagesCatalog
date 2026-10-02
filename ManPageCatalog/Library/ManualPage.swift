@@ -31,7 +31,7 @@ struct ManualPage: Identifiable, Hashable, Codable, Sendable {
 }
 
 enum CoverageKind: String, Codable, CaseIterable, Sendable {
-    case excluded, inaccessible, failed, unsupported
+    case pending, excluded, inaccessible, failed, unsupported
 }
 
 struct DiscoveryIssue: Codable, Hashable, Sendable {
@@ -102,16 +102,20 @@ func pathContains(root: String, path: String) -> Bool {
 func loadDiscovery(_ url: URL) throws -> LibraryScan {
     do {
         let saved = try JSONDecoder().decode(LibraryScan.self, from: Data(contentsOf: url))
-        for page in saved.pages {
-            guard !page.locations.isEmpty, !page.name.isEmpty, !page.section.isEmpty,
-                  page.locations.contains(where: { $0.source == page.source && $0.root == page.root && $0.name == page.name }),
-                  page.fingerprint.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil,
-                  page.locations.allSatisfy({ $0.source.isFileURL && $0.root.isFileURL && !$0.name.isEmpty && $0.section == page.section && $0.language == page.language }) else {
-                throw ManualToolError(message: "Inventory contains a manual with invalid identity or source locations.")
-            }
-        }
+        try validateManualPages(saved.pages)
         return saved
     } catch {
         throw ManualToolError(message: "Cannot read discovery inventory \(url.path): \(error.localizedDescription) Move this app-owned inventory aside to rebuild it; original manuals and PDF catalogs are separate.")
+    }
+}
+
+func validateManualPages(_ pages: [ManualPage]) throws {
+    for page in pages {
+        guard !page.locations.isEmpty, !page.name.isEmpty, !page.section.isEmpty,
+              page.locations.contains(where: { $0.source == page.source && $0.root == page.root && $0.name == page.name }),
+              page.fingerprint.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil,
+              page.locations.allSatisfy({ $0.source.isFileURL && $0.root.isFileURL && !$0.name.isEmpty && $0.section == page.section && $0.language == page.language }) else {
+            throw ManualToolError(message: "Inventory contains a manual with invalid identity or source locations.")
+        }
     }
 }

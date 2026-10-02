@@ -1,0 +1,40 @@
+{
+  "method": "Built-in image_gen; selected clean outputs reconstructed from user-supplied master. Routine size and file-format conversion uses macOS sips/iconutil.",
+  "assets": [
+    {
+      "name": "app-icon-dark",
+      "prompt": "Use case: background-extraction. Asset type: production macOS app icon. Input image is the EDIT TARGET, a master branding presentation sheet. Extract/reconstruct ONLY the large dark rounded-square app icon in the middle-left of the supplied sheet, labelled App Icon (512\u00d7512), as ONE clean individual 1024\u00d71024 image. Remove the size label and every other object. Preserve the exact open-book silhouette, layered pages, white terminal >_ symbol, icy white-to-cyan-to-electric-blue gradient, dark navy rounded-square tile, subtle cyan rim, and proportions. Crisp high-quality edges, front-facing flat icon, no perspective. Center the rounded-square tile occupying 90% of square canvas with a transparent outer margin. Preserve the design, no invented decorations, no text, no watermark.",
+      "selected": true
+    },
+    {
+      "name": "logo-mark",
+      "prompt": "Use case: background-extraction. Asset type: transparent logo symbol. Input image is the EDIT TARGET, a master branding sheet. Extract/reconstruct ONLY the large open-book-with-terminal mark at the TOP LEFT, without the wordmark, background, labels or rounded-square app tile. Output one individual square 1024\u00d71024 transparent PNG. Preserve precisely the supplied layered open book geometry, white >_ terminal symbol, bright icy white upper-left page, cyan-to-electric-blue lower/right page gradients, sharp blue page tips and clear negative spaces. Front-facing, crisp clean artwork, centered with 10% clear margins, nothing else. Actual transparent background.",
+      "selected": false
+    },
+    {
+      "name": "wordmark",
+      "prompt": "Use case: background-extraction. Asset type: horizontal website/repository logo lockup for dark backgrounds. Input is the EDIT TARGET master branding sheet. Extract/reconstruct ONLY the TOP horizontal open-book terminal symbol and ManPagesCatalog wordmark with its small tagline. Produce one clean individual wide 3:1 transparent PNG, no sheet background or other artwork. Preserve the source open-book geometry and icy white/cyan/electric blue gradients. Exact main text: \"ManPagesCatalog\" with \"ManPages\" in white and \"Catalog\" in bright blue, same bold clean sans-serif as the reference. Exact small tagline: \"EXPLORE \u00b7 SEARCH \u00b7 LEARN \u00b7 REFERENCE\". Spacious, centered, correctly spelled, all content inside generous outer clear margin. No labels, no extra text.",
+      "selected": false
+    },
+    {
+      "name": "social-preview",
+      "prompt": "Use case: precise-object-edit. Asset type: GitHub repository social preview and hideouts.io project hero. The supplied master is the EDIT TARGET. Reconstruct just the BOTTOM blue mountain/forest banner as one polished standalone 1280\u00d7640 landscape 2:1 image, adapting spacing to this true aspect ratio. Preserve the source's dark midnight navy, cyan/electric blue palette, open-book >_ logo, crisp bold ManPagesCatalog title (ManPages white, Catalog blue), stylized mountains, silhouetted pine trees, and small terminal-style panel at right. All vital text/logo within 60px safe edges. Exact title \"ManPagesCatalog\". Exact tagline \"EXPLORE \u00b7 SEARCH \u00b7 LEARN \u00b7 REFERENCE\". Replace the original Linux/Unix marketing sentence with accurate app copy: \"Your Mac\u2019s manuals, within reach.\" and underneath \"Search commands. Read documentation. Export PDFs.\". Right panel should be a tasteful illustration, not claimed screenshot: top \"$ man _\" and exactly four clean rows \"Search manuals\", \"Read documentation\", \"Find in page\", \"Export PDF\", with simple matching icons. No categories, no extra feature promises. No label saying GitHub Social Preview, no dimension labels, no sheet remnants. Sharp professional typography.",
+      "selected": true
+    },
+    {
+      "name": "app-icon-light",
+      "prompt": "Use case: background-extraction. Asset type: light website/app icon alternative. Input is the EDIT TARGET master branding sheet. Extract/reconstruct ONLY the small light-background icon at the middle-right as one clean individual 1024\u00d71024 PNG with genuinely transparent area outside the rounded white icon tile. Remove the large white rectangular presentation card, the label, and all other artwork. Preserve the white softly rounded-square tile, subtle soft shadow, centered layered cyan/blue open-book logo with dark navy inner pages and white >_ terminal mark. Crisp flat front view, no perspective, no invented elements, no text. Tile takes 86% of canvas, with balanced transparent margins.",
+      "selected": true
+    },
+    {
+      "name": "logo-mark-clean",
+      "prompt": "Use case: precise-object-edit. Asset type: standalone brand mark. Edit target: original master branding sheet. Produce only the TOP LEFT book/terminal symbol, without any wording, as a single square logo on uniform solid midnight navy #07111B. Preserve the book's layered page geometry and white-to-cyan-to-blue gradients, crisp white >_ symbol, two separated sharp blue page tips. All inner book areas also solid dark navy. Logo centered at 80% canvas width, uncluttered, perfectly clean smooth edges. No shadows, no glow, no grain, no speckles, no transparency, no border, no app icon tile, no other objects. Faithful professional reconstruction of the supplied logo mark.",
+      "selected": true
+    },
+    {
+      "name": "wordmark-clean",
+      "prompt": "Use case: precise-object-edit. Asset type: horizontal brand wordmark. Edit target: original master branding sheet. Reproduce ONLY its TOP horizontal logo banner at 3:1 aspect ratio, with uniform solid midnight navy #07111B background. Preserve original clean open-book terminal symbol, white/cyan/blue gradients, exact main title \"ManPagesCatalog\" with white \"ManPages\" and electric-blue \"Catalog\" in the same bold sans-serif proportions. Exact smaller tracked tagline \"EXPLORE \u00b7 SEARCH \u00b7 LEARN \u00b7 REFERENCE\". Clean flat premium typography with absolutely NO shadows, NO glow, NO grunge, NO speckles, NO halos and NO transparency. Do not include the lower icon row or mountain/social panel. Balanced generous dark margin around the full lockup. Faithful clean reconstruction, no new elements.",
+      "selected": true
+    }
+  ]
+}

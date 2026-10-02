@@ -54,11 +54,12 @@ func discoverManuals(roots: [URL]) throws -> [ManualSource] {
 
 func manualBytes(source: URL) async throws -> Data {
     try requireMaterializedManual(source)
-    if ["gz", "Z", "bz2"].contains(source.pathExtension) {
-        return try await runManualTool(executable: URL(fileURLWithPath: source.pathExtension == "bz2" ? "/usr/bin/bzip2" : "/usr/bin/gzip"), arguments: ["-dc", source.path],
+    let compression = manualCompression(try manualPrefix(source))
+    if [.gzip, .compress, .bzip2].contains(compression) || ["gz", "Z", "bz2"].contains(source.pathExtension) {
+        return try await runManualTool(executable: URL(fileURLWithPath: compression == .bzip2 || source.pathExtension == "bz2" ? "/usr/bin/bzip2" : "/usr/bin/gzip"), arguments: ["-dc", source.path],
                                        directory: source.deletingLastPathComponent(), input: nil)
     }
-    if source.pathExtension == "xz" { throw ManualToolError(message: "XZ-compressed manual is unsupported: \(source.path)") }
+    if let compression { throw ManualToolError(message: "Unsupported \(compression.rawValue) compressed manual: \(source.path). Extract it explicitly before opening.") }
     return try Data(contentsOf: source)
 }
 

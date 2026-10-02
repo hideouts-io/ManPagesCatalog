@@ -22,7 +22,7 @@ struct ContentView: View {
             }.listStyle(.sidebar).navigationSplitViewColumnWidth(min: 150, ideal: 190, max: 260)
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Button { openWindow(id: "sources") } label: { Label("Sources & Index", systemImage: "externaldrive") }
+                    Button { openWindow(id: "sources") } label: { Label("Scan & Sources", systemImage: "externaldrive") }
                         .accessibilityIdentifier("showSources")
                     Text("\(library.pages.count) manuals\n\(library.indexedCount) indexed manuals")
                         .font(.caption).foregroundStyle(.secondary)
@@ -52,11 +52,11 @@ struct ContentView: View {
                         Text(result.page.title).font(.system(.body, design: .monospaced)).fontWeight(.semibold)
                         Text(result.page.description.isEmpty ? (result.page.problem != nil ? "Description unavailable — see Sources" : result.page.indexed ? "No description in this manual" : "Description not indexed yet") : result.page.description)
                             .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        HStack {
-                            Text("\(result.page.language) • \(result.page.locations.count) location(s) • \(result.page.root.path)").lineLimit(1).truncationMode(.middle)
-                            Spacer()
-                            Text(result.reason)
-                        }.font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text("\(result.page.locations.count) source \(result.page.locations.count == 1 ? "location" : "locations")\(result.reason.isEmpty ? "" : " • " + result.reason)")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        if result.page.language != "unspecified" {
+                            Text("Language: \(result.page.language)").font(.caption).foregroundStyle(.secondary)
+                        }
                     }.padding(.vertical, 4).tag(result.page.id)
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("result-\(result.page.source.path)")
@@ -66,7 +66,7 @@ struct ContentView: View {
                         VStack(spacing: 10) {
                             Image(systemName: "magnifyingglass").font(.largeTitle).foregroundStyle(.secondary)
                             Text(library.isIndexing && library.pages.isEmpty ? "Discovering manuals…" : library.errorMessage != nil && library.pages.isEmpty ? "Library unavailable" : library.pages.isEmpty ? "No manuals discovered" : "No matching manuals").font(.headline)
-                            Text("Try a command name, network, or processes.").font(.caption).foregroundStyle(.secondary)
+                            Text(library.pages.isEmpty ? "Run Standard Scan for installed documentation, or Deep Scan to look throughout local volumes. Names become searchable as discovery progresses." : "Try another command name or search all sources and sections. Full-text search covers indexed manuals only.").font(.caption).foregroundStyle(.secondary)
                             Button("Search All Sources & Sections") { library.searchAll(); searchFocusRequest = UUID() }.accessibilityIdentifier("emptySearchAll")
                             if library.pages.isEmpty { Button("Review Sources") { openWindow(id: "sources") }.accessibilityIdentifier("emptyReviewSources") }
                         }.padding().multilineTextAlignment(.center)
@@ -105,7 +105,7 @@ struct ContentView: View {
                 }.accessibilityIdentifier("toggleTerminalPane").keyboardShortcut("j", modifiers: .command)
             }
             ToolbarItem {
-                Button { openWindow(id: "sources") } label: { Label(library.isIndexing ? "Indexing…" : "Sources", systemImage: library.isIndexing ? "arrow.triangle.2.circlepath" : "externaldrive") }
+                Button { openWindow(id: "sources") } label: { Label("Scan & Sources", systemImage: "externaldrive.badge.magnifyingglass").labelStyle(.titleAndIcon) }
                     .accessibilityIdentifier("manageSources")
             }
         }
@@ -113,12 +113,12 @@ struct ContentView: View {
             HStack {
                 Text(library.errorMessage ?? library.status).lineLimit(2).textSelection(.enabled).accessibilityIdentifier("libraryStatus").accessibilityValue(library.errorMessage ?? library.status)
                 Spacer()
-                if library.isIndexing { Button("Stop") { library.stop() }.accessibilityIdentifier("stopIndexing") }
+                if library.isIndexing { Button(library.phase == .discovering ? "Pause Scan" : "Pause Indexing") { library.stop() }.accessibilityIdentifier("stopIndexing") }
             }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 6).background(.bar)
         }
         .task {
             reader.onReference = { name, section in followReference(name: name, section: section) }
-            library.scan()
+            library.openLibrary()
         }
         .onChange(of: selectedID) { id in if let page = library.results.first(where: { $0.id == id })?.page { open(page) } }
         .onChange(of: library.pages.count) { count in

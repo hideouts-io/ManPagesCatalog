@@ -38,6 +38,7 @@ targets:
       properties:
         CFBundleName: Man Page Catalog
         CFBundleDisplayName: Man Page Catalog
+        CFBundleIconFile: AppIcon
         NSHumanReadableCopyright: ""
         LSMinimumSystemVersion: "13.0"
         CFBundleURLTypes:

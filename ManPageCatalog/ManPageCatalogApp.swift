@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct ManPageCatalogApp: App {
     @NSApplicationDelegateAdaptor(CatalogApplicationDelegate.self) private var applicationDelegate
+    @AppStorage("manualAppearance") private var appearance = "system"
     @StateObject private var library: LibraryStore
     @StateObject private var reader = ManualReader()
     @StateObject private var terminal = TerminalSession()
@@ -22,7 +23,7 @@ struct ManPageCatalogApp: App {
 
     var body: some Scene {
         Window("Man Page Catalog", id: "browser") {
-            ContentView()
+            ContentView().preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
                 .environmentObject(library)
                 .environmentObject(reader)
                 .environmentObject(terminal)
@@ -51,8 +52,9 @@ struct ManPageCatalogApp: App {
                 .keyboardShortcut("r", modifiers: .command)
             }
         }
-        Window("Sources & Index", id: "sources") {
+        Window("Scan & Sources", id: "sources") {
             SourcesView().environmentObject(library)
+                .preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
         }.windowResizability(.contentSize)
     }
 }
