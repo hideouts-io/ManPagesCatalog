@@ -17,6 +17,8 @@ targets:
     platform: macOS
     sources:
       - path: ManPageCatalog
+      - path: LICENSE
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.local.ManPageCatalog
@@ -39,6 +41,8 @@ targets:
         CFBundleName: Man Page Catalog
         CFBundleDisplayName: Man Page Catalog
         CFBundleIconFile: AppIcon
+        CFBundleShortVersionString: "2.0.0"
+        CFBundleVersion: "20001"
         NSHumanReadableCopyright: ""
         LSMinimumSystemVersion: "13.0"
         CFBundleURLTypes:

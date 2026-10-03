@@ -15,7 +15,7 @@ ManPagesCatalog brings the documentation already installed on your Mac into one 
 
 > **Scope:** Discovery, search, reading, and command preparation never execute a documented command. Running a draft or starting an interactive shell is a separate, explicit action on your real Mac. Deep Scan reports what it inspected and what it could not inspect; a completed traversal is not a guarantee that every manual on the machine was found.
 
-This README describes the current native application and the development ZIP tracked with this source. The published [`v1.0.0` release](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v1.0.0), dated March 29, 2026, documents the earlier PDF-generation app and its external dependencies. Use the current build instructions below for the features shown here.
+This README describes the native [`v2.0.0-beta.1` prerelease](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v2.0.0-beta.1) and the matching ZIP tracked with this source. The older [`v1.0.0` release](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v1.0.0), dated March 29, 2026, contains the earlier PDF-generation app and its external dependencies.
 
 ## Contents
 
@@ -78,9 +78,9 @@ These are captures of the packaged native app using an isolated library limited 
 | Building from source | Full Xcode with macOS SDK; validated with Xcode 27.0. SwiftPM resolves the pinned SwiftTerm package. |
 | Test target | macOS 14 or later, as configured in `project.yml`. |
 
-### Use the packaged development app
+### Use the packaged prerelease
 
-The [tracked application ZIP](ManPageCatalog-macOS.zip) contains the branded app and its bundled terminal resources. Extract it and open **Man Page Catalog.app**. You can keep the app in a folder of your choice; the source checkout and an existing catalog are not runtime requirements.
+Download the app and SHA-256 checksum from the [`v2.0.0-beta.1` prerelease](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v2.0.0-beta.1), or use the matching [tracked application ZIP](ManPageCatalog-macOS.zip). It contains the branded app, licenses, and bundled terminal resources. Extract it and open **Man Page Catalog.app**. You can keep the app in a folder of your choice; the source checkout and an existing catalog are not runtime requirements.
 
 The ZIP is ad-hoc signed and has not been Developer ID signed or notarized. If macOS blocks a downloaded copy, use a locally built application or wait for a notarized release. These instructions do not require disabling Gatekeeper or removing quarantine attributes.
 
@@ -335,7 +335,7 @@ open -n --env MANPATH=/usr/share/man --env PATH=/usr/bin:/bin:/usr/sbin:/sbin \
 
 Verify search → read → Find → PDF export, pause/resume, and retained results in that isolated library. Check the bundle’s `AppIcon.icns`, `CFBundleIconFile`, SwiftTerm resources, and license. Keep private catalogs, checkpoints, terminal output, and coverage reports out of release ZIPs.
 
-The current workflow builds/tests on a macOS runner, creates a universal app archive, and publishes an app-only ZIP for version tags. It does not provide Developer ID signing, notarization, or proof of execution on both architectures. Publishing a release is separate from creating a local commit or changing a GitHub social preview.
+The manually triggered workflow builds/tests on a macOS runner and creates a universal app archive. Releases are published separately; ordinary pushes and tags do not automatically publish a release. The workflow does not provide Developer ID signing, notarization, or proof of execution on both architectures.
 
 ## Validation and roadmap
 
@@ -366,4 +366,4 @@ Keep changes focused, preserve usable catalogs and manual sources, use stable ac
 
 ## License
 
-A repository-wide license for this project’s original code has not been declared in a root `LICENSE` file. SwiftTerm’s MIT license applies to that component and does not declare the license of the rest of this repository. Upstream manuals and other components retain their own terms.
+ManPagesCatalog is released under the [MIT License](LICENSE). SwiftTerm’s [MIT notice](ManPageCatalog/Resources/SwiftTerm-LICENSE.txt) is included with the application. Upstream manuals and other components retain their own terms.

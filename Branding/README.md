@@ -34,4 +34,4 @@ The preview describes the current macOS product: searching manuals, reading docu
 
 The website pack contains `web/` and `logos/`. Place their contents under your chosen public asset directory, preserve subdirectories, and adapt `web/head.html` to that deployed URL. Use the hero as a feature image, the wordmark for headers on a dark surface, and the PNG icons for favicons and touch icons. Supply meaningful alt text such as “ManPagesCatalog — searchable manuals for macOS”; use empty alt text when an adjacent label already identifies a decorative logo.
 
-These files prepare the website assets only; the live hideouts.io site is unchanged. Updating the GitHub repository's social preview is separate from deploying a website or publishing a release.
+The [hideouts.io app page](https://hideouts.io/apps/man-pages-catalog/) uses the current icon and website social image. Its content follows this repository's README, with presentation settings maintained in the [website source](https://github.com/hideouts-io/hideouts.io). Website deployment, GitHub's repository social preview, and app releases are separate publication steps.

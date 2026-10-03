@@ -10,6 +10,7 @@
 		0F9FAA51C832093D55E7A6F7 /* CatalogEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28A0E12B3A29B756A3740D94 /* CatalogEntry.swift */; };
 		1A8C7590185043EE18AC7B81 /* DiscoveryPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A5445E9B2E6B9495348CA7E /* DiscoveryPlan.swift */; };
 		25094B05800483476D3A6743 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = FC99C3E6091C76F34E5F48D4 /* libsqlite3.tbd */; };
+		2A81C4F9BDC1E55E7DFA0A15 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = 45077E0E75BDA2FCE062A972 /* LICENSE */; };
 		2B2FA040EA4E6D778E828A5C /* CatalogIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92A29C938BEF4E09EA90DEE4 /* CatalogIntegrationTests.swift */; };
 		314F88AAA993E32665C2E359 /* NativeBrowserIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A15F20ADF2D1F8952C7AF8 /* NativeBrowserIntegrationTests.swift */; };
 		39243C8DC9B07C1D5157E5D9 /* TerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1546C758F0E48B5383A06BE /* TerminalSession.swift */; };
@@ -64,6 +65,7 @@
 		2B92E408F8775A3FE5B40761 /* GlobalSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchField.swift; sourceTree = "<group>"; };
 		2D1AACE5F5C6EE1CFB147CAD /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		3FD5C5BFD59DDDC45DFB4822 /* CommandDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandDraft.swift; sourceTree = "<group>"; };
+		45077E0E75BDA2FCE062A972 /* LICENSE */ = {isa = PBXFileReference; path = LICENSE; sourceTree = "<group>"; };
 		51D83AFDC6F6A346BF6D87B6 /* ManPageCatalogTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ManPageCatalogTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		53C1E21A000D17C697FB2E93 /* PDFReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFReader.swift; sourceTree = "<group>"; };
 		59606FFA25756A293A459359 /* ManualReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualReader.swift; sourceTree = "<group>"; };
@@ -130,6 +132,7 @@
 		159D7F36E9CE2A5EDAAA54C0 = {
 			isa = PBXGroup;
 			children = (
+				45077E0E75BDA2FCE062A972 /* LICENSE */,
 				037027898911A9EA6B734F0D /* ManPageCatalog */,
 				B722197A609718354AA5683F /* NativeTests */,
 				C0CA1E27E91DAACD8C7C00D4 /* Frameworks */,
@@ -326,6 +329,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5F93AF93EA06EAF9210A93A1 /* AppIcon.icns in Resources */,
+				2A81C4F9BDC1E55E7DFA0A15 /* LICENSE in Resources */,
 				470DCB11969529D6856DE178 /* SwiftTerm-LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
