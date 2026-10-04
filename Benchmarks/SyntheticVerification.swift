@@ -1,6 +1,47 @@
 import Foundation
 import Darwin
 
+/// Read one native directory entry at a time, rejecting aliases and invalid UTF-8 names.
+/// Enumeration and descriptor-close errors are explicit; each callback has its own autorelease pool.
+func forEachHarnessDirectoryEntry(_ directory: URL, _ body: (URL) throws -> Void) throws {
+    let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else { throw HarnessError.filesystem(directory.path, errno) }
+    guard let handle = fdopendir(descriptor) else {
+        let failure = errno
+        guard close(descriptor) == 0 else { throw HarnessError.filesystem(directory.path, errno) }
+        throw HarnessError.filesystem(directory.path, failure)
+    }
+    let enumeration: Result<Void, Error> = Result {
+        while true {
+            errno = 0
+            guard let entry = readdir(handle) else {
+                guard errno == 0 else { throw HarnessError.filesystem(directory.path, errno) }
+                break
+            }
+            try autoreleasepool {
+                let name = try withUnsafeBytes(of: entry.pointee.d_name) { bytes -> String in
+                    let length = Int(entry.pointee.d_namlen)
+                    guard length > 0, length < bytes.count, bytes[length] == 0,
+                          let name = String(bytes: bytes.prefix(length), encoding: .utf8),
+                          !name.contains("/"), !name.contains("\0") else {
+                        throw HarnessError.invalid("Directory contains an invalid UTF-8 or malformed entry name: \(directory.path)")
+                    }
+                    return name
+                }
+                if name != ".", name != ".." { try body(directory.appendingPathComponent(name)) }
+            }
+        }
+    }
+    if closedir(handle) != 0 {
+        let failure = errno
+        if case .failure(let error) = enumeration {
+            throw HarnessError.invalid("Cannot close directory \(directory.path) (errno \(failure)); enumeration also failed: \(error.localizedDescription)")
+        }
+        throw HarnessError.filesystem(directory.path, failure)
+    }
+    try enumeration.get()
+}
+
 /// Verify actual ordinary entries with lstat and their deterministic payload, without following directory aliases.
 /// This operation is explicit because a full verification warms the corpus before benchmark scanning.
 func verify(_ root: URL, _ token: String) throws {
@@ -16,12 +57,11 @@ func verify(_ root: URL, _ token: String) throws {
     var actual = 0
     var nonempty = 0
     let expectedDirectories = checkpoint.ordinaryFilesCreated == 0 ? 0 : 1 + (checkpoint.ordinaryFilesCreated - 1) / checkpoint.options.filesPerDirectory
-    let folders = try FileManager.default.contentsOfDirectory(at: ordinary, includingPropertiesForKeys: nil)
-    guard folders.count == expectedDirectories else { throw HarnessError.invalid("Unexpected ordinary directory count: \(folders.count), expected \(expectedDirectories).") }
-    for folder in folders {
+    var folders = 0
+    try forEachHarnessDirectoryEntry(ordinary) { folder in
+        folders += 1
         guard try checkedState(folder).st_mode & S_IFMT == S_IFDIR else { throw HarnessError.invalid("Ordinary corpus contains an unexpected directory alias: \(folder.path)") }
-        let entries = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
-        for url in entries {
+        try forEachHarnessDirectoryEntry(folder) { url in
             let name = url.deletingPathExtension().lastPathComponent
             guard let raw = name.split(separator: "-").last, let index = Int(raw), index < checkpoint.ordinaryFilesCreated,
                   url == ordinaryURL(root, index, checkpoint.options) else { throw HarnessError.invalid("Unexpected ordinary entry: \(url.path)") }
@@ -31,6 +71,7 @@ func verify(_ root: URL, _ token: String) throws {
             if !expected.isEmpty { nonempty += 1 }
         }
     }
+    guard folders == expectedDirectories else { throw HarnessError.invalid("Unexpected ordinary directory count: \(folders), expected \(expectedDirectories).") }
     guard actual == checkpoint.ordinaryFilesCreated, nonempty == manifest.payloadOrdinaryFiles else {
         throw HarnessError.invalid("Actual ordinary counts differ from checkpoint/manifest: \(actual) files, \(nonempty) payload files.")
     }
@@ -78,21 +119,26 @@ func verify(_ root: URL, _ token: String) throws {
 /// Only the harness-owned protected fixture has its permissions restored before deletion.
 func requireOwnedCleanupContents(_ root: URL, _ checkpoint: GenerationCheckpoint) throws {
     let allowed: Set<String> = [".manpages-stress-owner.json", "generation-checkpoint-v1.json", "fixture-manifest-v1.json", "manifest-v1.json", "verification-v1.json", "fixtures", "ordinary"]
-    let entries = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-    guard entries.allSatisfy({ allowed.contains($0.lastPathComponent) }) else {
-        throw HarnessError.invalid("Root contains foreign top-level entries; move them out before harness cleanup: \(root.path)")
+    var ordinaryExists = false
+    var fixturesExist = false
+    try forEachHarnessDirectoryEntry(root) { entry in
+        guard allowed.contains(entry.lastPathComponent) else {
+            throw HarnessError.invalid("Root contains foreign top-level entries; move them out before harness cleanup: \(root.path)")
+        }
+        if entry.lastPathComponent == "ordinary" { ordinaryExists = true }
+        if entry.lastPathComponent == "fixtures" { fixturesExist = true }
     }
-    if entries.contains(where: { $0.lastPathComponent == "ordinary" }) {
+    if ordinaryExists {
         let ordinary = root.appendingPathComponent("ordinary")
         guard try checkedState(ordinary).st_mode & S_IFMT == S_IFDIR else { throw HarnessError.invalid("Cleanup refuses an ordinary/ root replaced by a directory alias.") }
-        for folder in try FileManager.default.contentsOfDirectory(at: ordinary, includingPropertiesForKeys: nil) {
+        try forEachHarnessDirectoryEntry(ordinary) { folder in
             let folderName = folder.lastPathComponent
             guard folderName.hasPrefix("b"), let number = Int(folderName.dropFirst()), number >= 0,
                   number < checkpoint.options.breadth, folderName == String(format: "b%06lld", Int64(number)),
                   try checkedState(folder).st_mode & S_IFMT == S_IFDIR else {
                 throw HarnessError.invalid("Cleanup refuses a foreign directory or directory alias: \(folder.path)")
             }
-            for url in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) {
+            try forEachHarnessDirectoryEntry(folder) { url in
                 guard let raw = url.deletingPathExtension().lastPathComponent.split(separator: "-").last,
                       let index = Int(raw), index >= 0, index < checkpoint.options.files,
                       url == ordinaryURL(root, index, checkpoint.options) else {
@@ -102,7 +148,7 @@ func requireOwnedCleanupContents(_ root: URL, _ checkpoint: GenerationCheckpoint
             }
         }
     }
-    if entries.contains(where: { $0.lastPathComponent == "fixtures" }) {
+    if fixturesExist {
         let fixtures = try decoded(FixtureManifest.self, root.appendingPathComponent("fixture-manifest-v1.json"))
         var paths = Set(fixtures.manuals.map(\.relativePath) + fixtures.issues.map(\.relativePath) + ["fixtures/inaccessible/unseen.1"])
         for path in Array(paths) {
@@ -111,7 +157,7 @@ func requireOwnedCleanupContents(_ root: URL, _ checkpoint: GenerationCheckpoint
         }
         var pending = [root.appendingPathComponent("fixtures")]
         while let directory = pending.popLast() {
-            for entry in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            try forEachHarnessDirectoryEntry(directory) { entry in
                 let relative = String(entry.path.dropFirst(root.path.count + 1))
                 guard paths.contains(relative) else { throw HarnessError.invalid("Cleanup refuses a foreign fixture entry: \(entry.path)") }
                 let metadata = try checkedState(entry)
@@ -122,6 +168,22 @@ func requireOwnedCleanupContents(_ root: URL, _ checkpoint: GenerationCheckpoint
             }
         }
     }
+}
+
+/// Remove a fully ownership-validated tree without materializing wide directories or following symlinks.
+func removeOwnedHarnessDirectory(_ directory: URL) throws {
+    try forEachHarnessDirectoryEntry(directory) { entry in
+        let metadata = try checkedState(entry)
+        if metadata.st_mode & S_IFMT == S_IFDIR {
+            try removeOwnedHarnessDirectory(entry)
+        } else {
+            guard [S_IFREG, S_IFLNK].contains(metadata.st_mode & S_IFMT) else {
+                throw HarnessError.invalid("Cleanup refuses an unexpected special filesystem entry: \(entry.path)")
+            }
+            guard unlink(entry.path) == 0 else { throw HarnessError.filesystem(entry.path, errno) }
+        }
+    }
+    guard rmdir(directory.path) == 0 else { throw HarnessError.filesystem(directory.path, errno) }
 }
 
 func cleanup(_ root: URL, _ token: String) throws {
@@ -147,6 +209,6 @@ func cleanup(_ root: URL, _ token: String) throws {
         if protectedExists, chmod(protected.path, 0o000) != 0 { throw HarnessError.filesystem(protected.path, errno) }
         throw error
     }
-    try FileManager.default.removeItem(at: root)
+    try removeOwnedHarnessDirectory(root)
     try FileHandle.standardOutput.write(contentsOf: Data("Removed ownership-verified harness root: \(root.path)\n".utf8))
 }

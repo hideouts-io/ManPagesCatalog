@@ -1,5 +1,7 @@
 import XCTest
 import PDFKit
+import Combine
+import Darwin
 @testable import Man_Page_Catalog
 
 final class DiscoveryIntegrationTests: XCTestCase {
@@ -177,6 +179,62 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertEqual(retained?.id, first.id)
     }
 
+    @MainActor
+    func testLegacyCheckpointRetainsRealInventoryAndSearchIndex() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryLegacy-\(UUID().uuidString)")
+        let root = directory.appendingPathComponent("manuals")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"),
+                                        to: root.appendingPathComponent("launchctl.1"))
+        let suite = "DiscoveryLegacy.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set([root.path], forKey: "manualRoots")
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove legacy-checkpoint integration files: \(error)") }
+        }
+        let library = directory.appendingPathComponent("index")
+        let store = LibraryStore(directory: library, defaults: defaults)
+        store.scanSelectedRoots()
+        try await finished(store)
+        let page = try XCTUnwrap(store.pages.first)
+        XCTAssertEqual(store.indexedCount, 1)
+        let pause = store.$scanProgress.compactMap { $0 }.first { $0.files > 0 }.sink { _ in store.stop() }
+        defer { pause.cancel() }
+        store.scanSelectedRoots()
+        try await finished(store)
+        XCTAssertEqual(store.phase, .paused)
+        let inventoryURL = library.appendingPathComponent("discovery-v1.json")
+        let checkpointURL = library.appendingPathComponent("scan-checkpoint-v1.json")
+        let inventory = try Data(contentsOf: inventoryURL)
+        let checkpoint = try Data(contentsOf: checkpointURL)
+        XCTAssertEqual(try JSONDecoder().decode(DiscoveryCheckpoint.self, from: checkpoint).version, 2)
+        let text = try XCTUnwrap(String(data: checkpoint, encoding: .utf8))
+        let version = try XCTUnwrap(text.range(of: "\"version\":2"))
+        let legacy = Data(text.replacingCharacters(in: version, with: "\"version\":1").utf8)
+        XCTAssertEqual(legacy.count, checkpoint.count)
+        try legacy.write(to: checkpointURL, options: .atomic)
+        let reopened = LibraryStore(directory: library, defaults: defaults)
+        reopened.openLibrary()
+        for _ in 0..<1000 {
+            if reopened.errorMessage != nil { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let error = try XCTUnwrap(reopened.errorMessage).lowercased()
+        XCTAssertTrue(error.contains("version 1"))
+        XCTAssertTrue(error.contains("fresh scan"))
+        XCTAssertEqual(try Data(contentsOf: checkpointURL), legacy)
+        XCTAssertEqual(try Data(contentsOf: inventoryURL), inventory)
+        XCTAssertEqual(reopened.pages.first?.id, page.id)
+        let retained = await reopened.firstResultForCurrentSearch()
+        XCTAssertEqual(retained?.id, page.id, "Loaded manuals remain searchable when their scan checkpoint cannot resume")
+        reopened.fullText = true
+        reopened.query = "bootstrap"
+        let indexed = await reopened.firstResultForCurrentSearch()
+        XCTAssertEqual(indexed?.id, page.id)
+    }
+
     func testDurablePauseResumeAndStaleCheckpointIsolation() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryResume-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -239,6 +297,143 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertFalse(busy, "Opening the app must not discard or restart a paused scan")
     }
 
+    func testStreamedWideDirectoryCancellationAndDurableResume() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryWide-\(UUID().uuidString)")
+        let root = try wideDirectory(directory)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove streamed discovery integration files: \(error)") }
+        }
+        let (partial, checkpoint) = try await pausedWideDirectory(root, directory.appendingPathComponent("checkpoint.json"))
+        let partialCoverage = try XCTUnwrap(partial.coverage.first)
+        XCTAssertTrue(partial.cancelled)
+        XCTAssertGreaterThan(partialCoverage.files, 0)
+        XCTAssertLessThan(partialCoverage.files, 257)
+        XCTAssertEqual(partialCoverage.directories, 1)
+        XCTAssertGreaterThan(checkpoint.pendingCount, 0)
+        XCTAssertLessThanOrEqual(checkpoint.pendingCount, 2, "A single directory must not queue every sibling URL")
+        XCTAssertEqual(checkpoint.snapshot.coverage.first?.files, partialCoverage.files)
+        XCTAssertTrue(partial.coverage.flatMap(\.issues).contains { $0.kind == .pending })
+        let resumed = try await continueDiscovery(checkpoint: checkpoint, previous: partial.pages, progress: { _ in }, save: { _ in })
+        let fresh = try await scanLibrary(roots: [root])
+        XCTAssertFalse(resumed.cancelled)
+        XCTAssertEqual(resumed.coverage.first?.files, 257)
+        XCTAssertEqual(resumed.coverage.first?.directories, 1)
+        XCTAssertEqual(resumed.coverage.first?.files, fresh.coverage.first?.files)
+        XCTAssertEqual(Set(resumed.pages.map(\.id)), Set(fresh.pages.map(\.id)))
+        XCTAssertEqual(resumed.pages.flatMap(\.locations).map(\.source), [root.appendingPathComponent("launchctl.1")])
+        XCTAssertFalse(resumed.coverage.flatMap(\.issues).contains { $0.kind == .pending })
+    }
+
+    func testMetadataOnlyDirectoryChangePreservesStreamedResume() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryWideMetadata-\(UUID().uuidString)")
+        let root = try wideDirectory(directory)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove directory-metadata integration files: \(error)") }
+        }
+        let (partial, checkpoint) = try await pausedWideDirectory(root, directory.appendingPathComponent("checkpoint.json"))
+        let descriptor = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw ManualToolError(message: "Cannot open owned directory \(root.path) for metadata verification: \(String(cString: strerror(errno))) (errno \(errno)).")
+        }
+        defer {
+            if close(descriptor) != 0 { XCTFail("Cannot close owned directory descriptor: \(String(cString: strerror(errno))) (errno \(errno)).") }
+        }
+        var before = stat()
+        guard fstat(descriptor, &before) == 0 else {
+            throw ManualToolError(message: "Cannot inspect owned directory before its metadata change: \(String(cString: strerror(errno))) (errno \(errno)).")
+        }
+        let attribute = "org.ManPagesCatalog.IntegrationTest"
+        let value = Data("Benign metadata-only resume integration case.".utf8)
+        let status = value.withUnsafeBytes { bytes in
+            setxattr(root.path, attribute, bytes.baseAddress, bytes.count, 0, XATTR_CREATE)
+        }
+        guard status == 0 else {
+            throw ManualToolError(message: "Cannot set benign owned-directory attribute \(attribute) at \(root.path): \(String(cString: strerror(errno))) (errno \(errno)).")
+        }
+        var after = stat()
+        guard fstat(descriptor, &after) == 0 else {
+            throw ManualToolError(message: "Cannot inspect owned directory after its metadata change: \(String(cString: strerror(errno))) (errno \(errno)).")
+        }
+        XCTAssertEqual(before.st_dev, after.st_dev)
+        XCTAssertEqual(before.st_ino, after.st_ino)
+        XCTAssertEqual(before.st_mtimespec.tv_sec, after.st_mtimespec.tv_sec)
+        XCTAssertEqual(before.st_mtimespec.tv_nsec, after.st_mtimespec.tv_nsec)
+        XCTAssertTrue(before.st_ctimespec.tv_sec != after.st_ctimespec.tv_sec || before.st_ctimespec.tv_nsec != after.st_ctimespec.tv_nsec,
+                      "The benign attribute must establish an actual ctime-only change")
+        let resumed = try await continueDiscovery(checkpoint: checkpoint, previous: partial.pages, progress: { _ in }, save: { _ in })
+        let fresh = try await scanLibrary(roots: [root])
+        XCTAssertFalse(resumed.cancelled)
+        XCTAssertTrue(try XCTUnwrap(resumed.coverage.first).completed)
+        XCTAssertEqual(resumed.coverage.first?.files, 257)
+        XCTAssertEqual(resumed.coverage.first?.files, fresh.coverage.first?.files)
+        XCTAssertEqual(Set(resumed.pages.map(\.id)), Set(fresh.pages.map(\.id)))
+        XCTAssertEqual(Set(resumed.pages.flatMap(\.locations).map(\.source)), Set(fresh.pages.flatMap(\.locations).map(\.source)))
+        XCTAssertEqual(resumed.pages.flatMap(\.locations).map(\.source), [root.appendingPathComponent("launchctl.1")])
+        XCTAssertFalse(resumed.coverage.flatMap(\.issues).contains { $0.kind == .pending })
+    }
+
+    func testOpenedDirectoryStreamRejectsReboundPath() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryWideRebound-\(UUID().uuidString)")
+        let root = try wideDirectory(directory)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove rebound-directory integration files: \(error)") }
+        }
+        let initial = try materializedFileState(root)
+        let stream = try DiscoveryDirectoryStream(directory: root, expectedIdentity: initial.identity, allowedNetworkRoots: [])
+        defer {
+            do { try stream.close() }
+            catch { XCTFail("Cannot close rebound-directory integration stream: \(error)") }
+        }
+        let moved = directory.appendingPathComponent("moved-manuals")
+        try FileManager.default.moveItem(at: root, to: moved)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        var movedState = stat()
+        guard lstat(moved.path, &movedState) == 0 else {
+            throw ManualToolError(message: "Cannot inspect moved owned directory \(moved.path): \(String(cString: strerror(errno))) (errno \(errno)).")
+        }
+        XCTAssertTrue(sameDiscoveryDirectoryNamespace(current: discoveryDirectoryMetadata(movedState), saved: stream.metadata),
+                      "Moving the owned directory must leave its opened inode and entry mtime unchanged")
+        XCTAssertNotEqual(try materializedFileState(root).identity, stream.metadata.identity)
+        XCTAssertThrowsError(try stream.verifyUnchanged()) { error in
+            XCTAssertEqual((error as? DiscoveryAccessError)?.kind, .failed)
+            let message = error.localizedDescription.lowercased()
+            XCTAssertTrue(message.contains(root.path.lowercased()), message)
+            XCTAssertTrue(message.contains("fresh scan"), message)
+        }
+    }
+
+    func testChangedStreamedDirectoryRejectsResumeWithoutReplacingCheckpoint() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryWideChanged-\(UUID().uuidString)")
+        let root = try wideDirectory(directory)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove changed-directory integration files: \(error)") }
+        }
+        let checkpointURL = directory.appendingPathComponent("checkpoint.json")
+        let (partial, checkpoint) = try await pausedWideDirectory(root, checkpointURL)
+        let saved = try Data(contentsOf: checkpointURL)
+        try Data("New nonmanual content after the pause.\n".utf8).write(to: root.appendingPathComponent("added.data"))
+        let file = DiscoveryCheckpointFile(url: checkpointURL)
+        let request = UUID()
+        await file.activate(request)
+        do {
+            _ = try await continueDiscovery(checkpoint: checkpoint, previous: partial.pages, progress: { _ in },
+                                            save: { try await file.save($0, request: request) })
+            XCTFail("A changed directory must require a fresh scan rather than accepting an old enumeration cursor")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.lowercased().contains("fresh scan"), error.localizedDescription)
+        }
+        XCTAssertEqual(try Data(contentsOf: checkpointURL), saved, "A failed resume must preserve the durable checkpoint")
+        let loaded = try await file.load()
+        let retained = try XCTUnwrap(loaded)
+        XCTAssertEqual(retained.snapshot.coverage.first?.files, partial.coverage.first?.files)
+        XCTAssertEqual(Set(retained.snapshot.pages.map(\.id)), Set(partial.pages.map(\.id)))
+        XCTAssertGreaterThan(retained.pendingCount, 0)
+    }
+
     func testIncrementalCoverageKeepsFormatterDiagnosticsSeparate() async throws {
         let source = URL(fileURLWithPath: "/usr/share/man/man1/atos.1")
         let scan = try await scanLibrary(roots: [source])
@@ -251,6 +446,33 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(refreshed.pages.first).indexed)
         XCTAssertEqual(refreshed.pages.first?.problem, page.problem)
         XCTAssertTrue(refreshed.coverage.flatMap(\.issues).isEmpty, "Usable formatter diagnostics are not unsupported discovery locations")
+    }
+
+    private func wideDirectory(_ directory: URL) throws -> URL {
+        let root = directory.appendingPathComponent("manuals")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"),
+                                        to: root.appendingPathComponent("launchctl.1"))
+        let payload = Data("Ordinary integration data without manual content.\n".utf8)
+        for index in 0..<256 { try payload.write(to: root.appendingPathComponent("entry-\(index).data")) }
+        return root
+    }
+
+    private func pausedWideDirectory(_ root: URL, _ checkpointURL: URL) async throws -> (LibraryScan, DiscoveryCheckpoint) {
+        let file = DiscoveryCheckpointFile(url: checkpointURL)
+        let request = UUID()
+        await file.activate(request)
+        let initial = newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: [root], allowedNetworkRoots: [], exclusions: []),
+                                             title: "Streamed integration scan")
+        let worker = Task.detached {
+            try await continueDiscovery(checkpoint: initial, previous: [], progress: { value in
+                if value.files > 0 { withUnsafeCurrentTask { $0?.cancel() } }
+            }, save: { try await file.save($0, request: request) })
+        }
+        let partial = try await worker.value
+        let reopened = DiscoveryCheckpointFile(url: checkpointURL)
+        let loaded = try await reopened.load()
+        return (partial, try XCTUnwrap(loaded))
     }
 
     private func finished(_ store: LibraryStore) async throws {

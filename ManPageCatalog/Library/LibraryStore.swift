@@ -93,7 +93,7 @@ final class LibraryStore: ObservableObject {
                         return value
                     }
                     phase = saved.pendingCount > 0 ? .paused : .ready
-                    status = saved.pendingCount > 0 ? "Saved \(saved.title) • \(pendingLocations) queued locations • Resume in Scan & Sources" : "Discovery saved • \(pages.count) manuals ready • Continue indexing in Scan & Sources"
+                    status = saved.pendingCount > 0 ? "Saved \(saved.title) • \(pendingLocations) unfinished folders / entries • Resume in Scan & Sources" : "Discovery saved • \(pages.count) manuals ready • Continue indexing in Scan & Sources"
                     search()
                 } else if pages.isEmpty { scan() }
                 else {
@@ -223,7 +223,7 @@ final class LibraryStore: ObservableObject {
                 await finishPerformance(state: .cancelled, request: request, durability: "Worker stopped; latest checkpoint and retained inventory saved")
                 guard request == operationID else { return }
                 isIndexing = false
-                status = wasIndexing ? "Indexing paused • \(indexedCount) of \(pages.count) manuals indexed • reading and name search are ready" : "\(scanMode) paused • \(pages.count) manuals retained • \(pendingLocations) queued locations"
+                status = wasIndexing ? "Indexing paused • \(indexedCount) of \(pages.count) manuals indexed • reading and name search are ready" : "\(scanMode) paused • \(pages.count) manuals retained • \(pendingLocations) unfinished folders / entries"
                 search()
             } catch {
                 guard request == operationID else { return }

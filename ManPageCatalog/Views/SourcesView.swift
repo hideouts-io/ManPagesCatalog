@@ -55,17 +55,17 @@ struct SourcesView: View {
                         }
                     }
                     if let report = library.performanceReport {
-                        Text("Discovery: \(report.discovery.cumulative.filesPerSecond.formatted(.number.precision(.fractionLength(0)))) files/sec • \(report.discovery.cumulative.directoriesPerSecond.formatted(.number.precision(.fractionLength(0)))) folders/sec • \(report.discovery.pendingQueue) queued • peak \(report.discovery.peakPendingQueue)")
+                        Text("Discovery: \(report.discovery.cumulative.filesPerSecond.formatted(.number.precision(.fractionLength(0)))) files/sec • \(report.discovery.cumulative.directoriesPerSecond.formatted(.number.precision(.fractionLength(0)))) folders/sec • \(report.discovery.pendingQueue) unfinished folders / entries • peak \(report.discovery.peakPendingQueue)")
                             .font(.caption).monospacedDigit().accessibilityIdentifier("scanPerformanceSummary")
                         Text("Local diagnostics only. Export Coverage saves a separate .performance.json report alongside the coverage file.")
                             .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("localDiagnosticsExplanation")
                     }
                     if library.resumableScan, let date = library.checkpointDate {
                         HStack {
-                            Text("\(library.pendingLocations) queued locations • checkpoint saved")
+                            Text("\(library.pendingLocations) unfinished folders / entries • checkpoint saved")
                             Text(date, style: .time)
                         }.font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("checkpointStatus")
-                        Text("Resume continues the saved traversal. A new scan replaces that checkpoint and rechecks previously visited folders. Queued folder contents are not counted yet.")
+                        Text("Resume verifies unfinished folders before continuing. A changed folder requires a fresh scan. A new scan replaces the checkpoint and rechecks visited folders. Remaining folder contents are not counted yet.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
@@ -86,7 +86,7 @@ struct SourcesView: View {
                                 Text(path).textSelection(.enabled)
                                 Spacer()
                                 Button("Remove") { library.removeRoot(path) }.disabled(library.isIndexing).accessibilityIdentifier("removeSource-\(path)")
-                            }
+                            }.id("selected-root-\(path)")
                         }
                         HStack {
                             Button("Add Folder or Volume…") { addFolder() }.disabled(library.isIndexing).accessibilityIdentifier("addManualSource")
@@ -113,7 +113,8 @@ struct SourcesView: View {
                                         }.accessibilityIdentifier("coverage-\(kind.rawValue)-\(source.root.path)")
                                     }
                                 }
-                            }.padding(.vertical, 5)
+                            }.padding(.vertical, 5).id("measured-root-\(source.root.path)")
+                                .accessibilityElement(children: .contain).accessibilityIdentifier("measuredCoverage-\(source.root.path)")
                         }
                     }
                     if !library.problemPages.isEmpty {
