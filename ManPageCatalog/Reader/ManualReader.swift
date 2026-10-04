@@ -272,18 +272,26 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
 
     func exportPDF() {
         guard let page else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.pdf]
-        panel.nameFieldStringValue = "\(page.name).\(page.section).pdf"
-        panel.title = "Export Manual as PDF"
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        guard let window = webView.window else {
+            message = "Cannot open PDF export: the manual is not attached to a reading window. Reopen the manual and try again."
+            return
+        }
+        guard !exporting else { return }
         exporting = true
         Task {
+            defer { exporting = false }
+            var destination: URL?
             do {
+                destination = try await chooseExportDestination(window: window, filename: "\(page.name).\(page.section).pdf",
+                    contentType: .pdf, title: "Export Manual as PDF", identifier: "manualPDFExportPanel")
+                guard let destination else { return }
                 try await renderManual(source: page.source, destination: destination)
                 message = "Exported \(destination.lastPathComponent)"
-            } catch { message = "PDF export failed: \(error.localizedDescription)" }
-            exporting = false
+            } catch {
+                if let destination {
+                    message = "PDF export failed for \(page.title) at \(destination.path): \(error.localizedDescription)"
+                } else { message = "Cannot open PDF export: \(error.localizedDescription)" }
+            }
         }
     }
 }

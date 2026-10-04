@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EEF130000000000000000001 /* ExportPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF130000000000000000002 /* ExportPanel.swift */; };
+		EEF130000000000000000003 /* ExportIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF130000000000000000004 /* ExportIntegrationTests.swift */; };
 		0F9FAA51C832093D55E7A6F7 /* CatalogEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28A0E12B3A29B756A3740D94 /* CatalogEntry.swift */; };
 		1A8C7590185043EE18AC7B81 /* DiscoveryPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A5445E9B2E6B9495348CA7E /* DiscoveryPlan.swift */; };
 		25094B05800483476D3A6743 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = FC99C3E6091C76F34E5F48D4 /* libsqlite3.tbd */; };
@@ -58,6 +60,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		EEF130000000000000000002 /* ExportPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportPanel.swift; sourceTree = "<group>"; };
+		EEF130000000000000000004 /* ExportIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportIntegrationTests.swift; sourceTree = "<group>"; };
 		079EF1B02AF7AF19D3A98FBA /* ManualSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualSearch.swift; sourceTree = "<group>"; };
 		0A7BF7D8795E54FE58F99749 /* ManualSearchIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualSearchIndex.swift; sourceTree = "<group>"; };
 		1EBB5851493F6616039B6151 /* SourcesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcesView.swift; sourceTree = "<group>"; };
@@ -182,6 +186,7 @@
 			children = (
 				7A4A54B9040641DBE3A1204A /* CatalogGenerator.swift */,
 				238060B2044C372E7BD63E64 /* CatalogStore.swift */,
+				EEF130000000000000000002 /* ExportPanel.swift */,
 				C013DADA15BAC2ABDC0401A8 /* ManualCatalog.swift */,
 				E12F63AFF7DC6C5E4A6F400B /* ManualProcess.swift */,
 				53C1E21A000D17C697FB2E93 /* PDFReader.swift */,
@@ -226,6 +231,7 @@
 			children = (
 				92A29C938BEF4E09EA90DEE4 /* CatalogIntegrationTests.swift */,
 				2534D0F63D6EC5F6C1765E5B /* DiscoveryIntegrationTests.swift */,
+				EEF130000000000000000004 /* ExportIntegrationTests.swift */,
 				C1A15F20ADF2D1F8952C7AF8 /* NativeBrowserIntegrationTests.swift */,
 				B4C5B1C8B2F8BDB0BA19FB8B /* PerformanceIntegrationTests.swift */,
 				F1C14685E3C4CF5BA4329360 /* TerminalIntegrationTests.swift */,
@@ -354,6 +360,7 @@
 				56FA7A3D17807BD81FD234CC /* ContentView.swift in Sources */,
 				D45AED488F46BD14D493D58C /* DiscoveryCheckpoint.swift in Sources */,
 				1A8C7590185043EE18AC7B81 /* DiscoveryPlan.swift in Sources */,
+				EEF130000000000000000001 /* ExportPanel.swift in Sources */,
 				88158E9DB9DCAF0D8368A9F0 /* GenerateView.swift in Sources */,
 				BCA7F9B778767CD8C9ABE56F /* GlobalSearchField.swift in Sources */,
 				BDA5F9917A7244CF6D6B31F9 /* LibraryStore.swift in Sources */,
@@ -382,6 +389,7 @@
 			files = (
 				2B2FA040EA4E6D778E828A5C /* CatalogIntegrationTests.swift in Sources */,
 				52AC22CD1FB5E3801DD9B8E9 /* DiscoveryIntegrationTests.swift in Sources */,
+				EEF130000000000000000003 /* ExportIntegrationTests.swift in Sources */,
 				314F88AAA993E32665C2E359 /* NativeBrowserIntegrationTests.swift in Sources */,
 				88E001E755F683300A923488 /* PerformanceIntegrationTests.swift in Sources */,
 				B859160EA1688D8258467E74 /* TerminalIntegrationTests.swift in Sources */,

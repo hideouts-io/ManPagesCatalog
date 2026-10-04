@@ -188,7 +188,7 @@ The executable path is resolved independently from the app’s PATH. A manual ca
 
 ### PDF export and copying
 
-**Export PDF** formats the original source into a paginated, selectable PDF through the native Save dialog. It does not capture the HTML viewport or bulk-render the catalog. A failed export reports the formatting error and leaves an existing destination unchanged.
+**Export PDF** formats the original source into a paginated, selectable PDF through a Save sheet attached to the reading window. Other app windows remain available. Cancelling does not start PDF generation. A failed export reports the destination and formatting error and leaves an existing destination unchanged.
 
 The **Copy** menu can copy a command name or selected text. **Copy & Open Terminal** copies the quoted command name and opens Terminal.app; you paste it yourself. It does not insert or execute the command.
 
@@ -310,7 +310,7 @@ xcodebuild -project ManPageCatalog.xcodeproj -scheme ManPageCatalog \
   -destination 'platform=macOS' test CODE_SIGN_IDENTITY=-
 ```
 
-Tests use installed `launchctl`, `ping`, `ifconfig`, `netstat`, and `scutil` manuals plus temporary collections. They exercise extraction, renamed compressed sources, aliases, duplicates, incremental scans, cancellation, durable resume, stale-write isolation, SQLite search, WebKit Find/history, PDF rendering, and legacy catalog preservation. PTY integration covers explicit startup, input, resizing, Ctrl-C, multiline execution, and attached-job cleanup. The test host uses an empty automatic scan scope and a separate temporary index.
+Tests use installed `launchctl`, `ping`, `ifconfig`, `netstat`, and `scutil` manuals plus temporary collections. They exercise extraction, renamed compressed sources, aliases, duplicates, incremental scans, cancellation, durable resume, stale-write isolation, SQLite search, WebKit Find/history, PDF rendering, and legacy catalog preservation. Native export-panel integration verifies window ownership, panel cancellation, competing-sheet rejection and interaction with another window. PTY integration covers explicit startup, input, resizing, Ctrl-C, multiline execution, and attached-job cleanup. The test host uses an empty automatic scan scope and a separate temporary index.
 
 ### Verify an extracted application
 
@@ -339,9 +339,9 @@ The manually triggered workflow builds/tests on a macOS runner and creates a uni
 
 ## Validation and roadmap
 
-The current native build passed **18 integration tests** and a universal Release build. Its extracted app was launched on Apple Silicon with a new temporary catalog; search, original-manual reading, in-page Find, bundled icon identity, and code-signature integrity were checked. PDF, cancellation/resume, and terminal behaviors also have integration coverage. These checks do not establish complete-machine discovery, Intel hardware compatibility, or full accessibility compliance.
+The current native build passed **21 integration tests** and a universal Release build. An isolated copy of the extracted app discovered and indexed three installed manuals on Apple Silicon; rendered checks verified search, reading, Find previous/next, PDF and coverage/telemetry saving, cancellation and retained reading state. PDFKit reopened the saved PDF, and exported coverage and telemetry matched the actual scan. Earlier packaged checks covered cancellation/relaunch/resume and large isolated scanning. These checks do not establish complete-machine discovery, Intel hardware compatibility, or full accessibility compliance.
 
-[TODO.md](TODO.md) is the single prioritized implementation backlog. It distinguishes verified work, implemented-but-unverified behavior, and work not yet implemented. The next coherent milestone is **finish and harden resumable discovery**: complete a measured whole-filesystem scan, bound checkpoint/search costs, account for directory aliases, and improve recovery across filesystem changes.
+[TODO.md](TODO.md) is the single prioritized implementation backlog. It distinguishes verified work, implemented-but-unverified behavior, and work not yet implemented. The next coherent milestone is **bound very wide directories and large inventories**: stream directory enumeration, bound pending work and manual-rich indexing, and measure retained search/reading responsiveness. Whole-filesystem coverage, directory aliases and recovery across filesystem changes remain part of that discovery plan.
 
 Subsequent work covers embedded includes, more compression formats, preformatted pages, formatter compatibility, keyboard/VoiceOver verification, older-OS/Intel validation, and notarized distribution. Tabs, persistent bookmarks, semantic search, Spotlight, App Intents, SSH sessions, and multiplexing are not current features.
 

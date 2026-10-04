@@ -1,9 +1,13 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SourcesView: View {
     @EnvironmentObject var library: LibraryStore
     @Environment(\.openWindow) private var openWindow
     @State private var reportError: String?
+    @State private var reportMessage: String?
+    @State private var exportingCoverage = false
+    @State private var exportAnchor = NSView(frame: .zero)
     @AppStorage("manualAppearance") private var appearance = "system"
 
     var body: some View {
@@ -67,7 +71,13 @@ struct SourcesView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
                     .accessibilityElement(children: .contain).accessibilityIdentifier("scanProgressPanel")
             }
-            if let error = library.errorMessage ?? reportError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            if let error = library.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            if let reportError {
+                Text(reportError).foregroundStyle(.red).textSelection(.enabled).accessibilityIdentifier("coverageExportError")
+            }
+            if let reportMessage {
+                Text(reportMessage).font(.caption).textSelection(.enabled).accessibilityIdentifier("coverageExportStatus")
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     Section("Selected folders / volumes") {
@@ -122,11 +132,13 @@ struct SourcesView: View {
                     Text("Dark").tag("dark").accessibilityIdentifier("appearanceDark")
                 }.pickerStyle(.segmented).frame(width: 300).accessibilityIdentifier("appAppearance")
                 Spacer()
-                Button("Export Coverage…") { exportCoverage() }.accessibilityIdentifier("exportCoverage")
+                Button(exportingCoverage ? "Exporting…" : "Export Coverage…") { exportCoverage() }
+                    .disabled(exportingCoverage).accessibilityIdentifier("exportCoverage")
             }
             Text("Original files and PDF catalogs are unchanged. Results from earlier scans stay available when a location is inaccessible or a scan is cancelled. Deep scanning can take time; no complete-machine guarantee is made.")
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(20).frame(minWidth: 780, minHeight: 700)
+            .background(SourceWindowAnchor(view: exportAnchor).frame(width: 0, height: 0))
     }
 
     private func scanChoice(title: String, explanation: String, identifier: String, action: @escaping () -> Void) -> some View {
@@ -147,12 +159,36 @@ struct SourcesView: View {
     }
 
     private func exportCoverage() {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "ManPages-scan-coverage.json"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try library.exportCoverage(to: url)
-            reportError = nil
-        } catch { reportError = "Cannot write coverage report to \(url.path): \(error.localizedDescription)" }
+        guard !exportingCoverage else { return }
+        reportError = nil
+        reportMessage = nil
+        guard let window = exportAnchor.window else {
+            reportError = "Cannot open coverage export: Sources & Discovery is not attached to a window. Reopen Scan & Sources and try again."
+            return
+        }
+        exportingCoverage = true
+        Task {
+            defer { exportingCoverage = false }
+            var destination: URL?
+            do {
+                destination = try await chooseExportDestination(window: window, filename: "ManPages-scan-coverage.json",
+                    contentType: .json, title: "Export Scan Coverage", identifier: "coverageExportPanel")
+                guard let destination else { return }
+                try library.exportCoverage(to: destination)
+                reportMessage = "Exported \(destination.lastPathComponent) and its .performance.json diagnostics report"
+            } catch {
+                if let destination {
+                    reportError = "Coverage export did not complete for \(destination.path): \(error.localizedDescription)"
+                } else { reportError = "Cannot open coverage export: \(error.localizedDescription)" }
+            }
+        }
     }
+}
+
+private struct SourceWindowAnchor: NSViewRepresentable {
+    let view: NSView
+
+    func makeNSView(context: Context) -> NSView { view }
+
+    func updateNSView(_ nsView: NSView, context: Context) { }
 }
