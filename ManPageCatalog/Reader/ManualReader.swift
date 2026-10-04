@@ -37,6 +37,10 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var showFind = false
     @Published var findQuery = ""
     @Published private(set) var findStatus = ""
+    @Published private(set) var readerGeneration: UUID?
+    @Published private(set) var findGeneration: UUID?
+    @Published private(set) var findOperation = InteractionOperation.findNext
+    private(set) var pendingFindCallbacks = 0
     var onReference: ((String, String) -> Void)?
     private var previous: [ReaderVisit] = []
     private var following: [ReaderVisit] = []
@@ -59,18 +63,29 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     func open(page: ManualPage, context: BrowseContext) async {
-        if !page.fingerprint.isEmpty && self.page?.id == page.id && self.page?.fingerprint == page.fingerprint && errorMessage == nil { return }
         let token = UUID()
+        InteractionDiagnostics.started(operation: .reader, generation: token, query: context.query, documentID: page.id)
+        if !page.fingerprint.isEmpty && self.page?.id == page.id && self.page?.fingerprint == page.fingerprint && errorMessage == nil {
+            InteractionDiagnostics.documentBound(operation: .reader, generation: token, documentGeneration: request)
+            InteractionDiagnostics.finished(operation: .reader, generation: token, outcome: loading ? .blocked : .reused,
+                detail: loading ? "The unchanged document is still loading." : "The existing document was retained without formatting or navigation.")
+            if InteractionDiagnostics.isEnabled && !loading { readerGeneration = token }
+            return
+        }
         openRequest = token
         do {
             let visit = try await currentVisit()
-            guard token == openRequest else { return }
+            guard token == openRequest else {
+                InteractionDiagnostics.finished(operation: .reader, generation: token, outcome: .superseded, detail: "A newer reader activation replaced this request.")
+                return
+            }
             if let visit { previous.append(visit) }
             following = []
-            load(ReaderVisit(page: page, context: context, scroll: 0, find: "", zoom: 1))
+            load(ReaderVisit(page: page, context: context, scroll: 0, find: "", zoom: 1), generation: token)
         } catch {
             guard token == openRequest else { return }
             errorMessage = "Cannot preserve reader position: \(error.localizedDescription)"
+            InteractionDiagnostics.finished(operation: .reader, generation: token, outcome: .failed, detail: errorMessage)
         }
     }
 
@@ -79,7 +94,7 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
         do {
             if let current = try await currentVisit() { following.append(current) }
             previous.removeLast()
-            load(visit)
+            load(visit, generation: UUID())
             return visit.context
         } catch { errorMessage = error.localizedDescription; return nil }
     }
@@ -89,22 +104,27 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
         do {
             if let current = try await currentVisit() { previous.append(current) }
             following.removeLast()
-            load(visit)
+            load(visit, generation: UUID())
             return visit.context
         } catch { errorMessage = error.localizedDescription; return nil }
     }
 
     func retry() {
         guard let page else { return }
-        load(ReaderVisit(page: page, context: context, scroll: pendingScroll, find: findQuery, zoom: webView.pageZoom))
+        load(ReaderVisit(page: page, context: context, scroll: pendingScroll, find: findQuery, zoom: webView.pageZoom), generation: UUID())
     }
 
-    private func load(_ visit: ReaderVisit) {
+    private func load(_ visit: ReaderVisit, generation: UUID) {
+        InteractionDiagnostics.started(operation: .reader, generation: generation, query: visit.context.query, documentID: visit.page.id)
         task?.cancel()
         activeNavigation = nil
         webView.stopLoading()
-        request = UUID()
+        request = generation
         let token = request
+        InteractionDiagnostics.documentBound(operation: .reader, generation: token, documentGeneration: token)
+        supersedeFind()
+        InteractionDiagnostics.findInputCancelled()
+        if InteractionDiagnostics.isEnabled { readerGeneration = nil }
         page = visit.page
         context = visit.context
         pendingScroll = visit.scroll
@@ -130,6 +150,7 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
                 guard request == token else { return }
                 loading = false
                 errorMessage = "Cannot render \(visit.page.source.path): \(error.localizedDescription)"
+                InteractionDiagnostics.finished(operation: .reader, generation: token, outcome: .failed, detail: errorMessage)
             }
         }
     }
@@ -159,10 +180,13 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
                 guard token == request else { return }
                 loading = false
                 if !pendingFind.isEmpty { findStatus = "Use Next or Previous to resume Find" }
+                InteractionDiagnostics.finished(operation: .reader, generation: token, outcome: .completed, detail: "WebKit navigation, outline decoding and scroll restoration completed.")
+                if InteractionDiagnostics.isEnabled { readerGeneration = token }
             } catch {
                 guard token == request else { return }
                 loading = false
                 errorMessage = "Cannot initialize the reader: \(error.localizedDescription)"
+                InteractionDiagnostics.finished(operation: .reader, generation: token, outcome: .failed, detail: errorMessage)
             }
         }
     }
@@ -171,12 +195,14 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
         guard let navigation, navigation === activeNavigation else { return }
         loading = false
         errorMessage = "WebKit could not load this manual: \(error.localizedDescription)"
+        InteractionDiagnostics.finished(operation: .reader, generation: request, outcome: .failed, detail: errorMessage)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         guard let navigation, navigation === activeNavigation else { return }
         loading = false
         errorMessage = "WebKit could not begin loading this manual: \(error.localizedDescription)"
+        InteractionDiagnostics.finished(operation: .reader, generation: request, outcome: .failed, detail: errorMessage)
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -195,30 +221,73 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
         }
     }
 
-    func findNext() {
+    func setFindQuery(_ query: String) {
+        guard query != findQuery else { return }
+        InteractionDiagnostics.findInput(query: query, documentID: page?.id, window: webView.window)
+        findQuery = query
+    }
+
+    private func supersedeFind() {
+        InteractionDiagnostics.finished(operation: .findNext, generation: findRequest, outcome: .superseded, detail: "A new Find request or document replaced this search.")
+        InteractionDiagnostics.finished(operation: .findPrevious, generation: findRequest, outcome: .superseded, detail: "A new Find request or document replaced this search.")
         findRequest = UUID()
+        if InteractionDiagnostics.isEnabled { findGeneration = nil }
+    }
+
+    func findNext() {
+        supersedeFind()
         let token = findRequest
-        guard !loading else { return }
+        let document = request
+        let query = findQuery
+        InteractionDiagnostics.started(operation: .findNext, generation: token, query: query, documentID: page?.id)
+        InteractionDiagnostics.documentBound(operation: .findNext, generation: token, documentGeneration: document)
+        guard !loading else {
+            InteractionDiagnostics.finished(operation: .findNext, generation: token, outcome: .blocked, detail: "The reader is still loading.")
+            return
+        }
         let config = WKFindConfiguration()
         config.caseSensitive = false
         config.wraps = true
-        webView.find(findQuery, configuration: config) { [weak self] result in
-            guard let self, token == self.findRequest else { return }
-            self.findStatus = self.findQuery.isEmpty ? "" : result.matchFound ? "Match found" : "No matches"
+        pendingFindCallbacks += 1
+        webView.find(query, configuration: config) { [weak self] result in
+            guard let self else { return }
+            self.pendingFindCallbacks -= 1
+            guard token == self.findRequest, document == self.request, query == self.findQuery else {
+                InteractionDiagnostics.finished(operation: .findNext, generation: token, outcome: .superseded, detail: "The document or Find query changed before WebKit completed.")
+                return
+            }
+            self.findStatus = query.isEmpty ? "" : result.matchFound ? "Match found" : "No matches"
+            InteractionDiagnostics.finished(operation: .findNext, generation: token, outcome: .completed, detail: self.findStatus)
+            if InteractionDiagnostics.isEnabled { self.findOperation = .findNext; self.findGeneration = token }
         }
     }
 
     func findPrevious() {
-        findRequest = UUID()
+        supersedeFind()
         let token = findRequest
-        guard !loading else { return }
+        let document = request
+        let query = findQuery
+        InteractionDiagnostics.started(operation: .findPrevious, generation: token, query: query, documentID: page?.id)
+        InteractionDiagnostics.documentBound(operation: .findPrevious, generation: token, documentGeneration: document)
+        guard !loading else {
+            InteractionDiagnostics.finished(operation: .findPrevious, generation: token, outcome: .blocked, detail: "The reader is still loading.")
+            return
+        }
         let config = WKFindConfiguration()
         config.caseSensitive = false
         config.backwards = true
         config.wraps = true
-        webView.find(findQuery, configuration: config) { [weak self] result in
-            guard let self, token == self.findRequest else { return }
-            self.findStatus = self.findQuery.isEmpty ? "" : result.matchFound ? "Match found" : "No matches"
+        pendingFindCallbacks += 1
+        webView.find(query, configuration: config) { [weak self] result in
+            guard let self else { return }
+            self.pendingFindCallbacks -= 1
+            guard token == self.findRequest, document == self.request, query == self.findQuery else {
+                InteractionDiagnostics.finished(operation: .findPrevious, generation: token, outcome: .superseded, detail: "The document or Find query changed before WebKit completed.")
+                return
+            }
+            self.findStatus = query.isEmpty ? "" : result.matchFound ? "Match found" : "No matches"
+            InteractionDiagnostics.finished(operation: .findPrevious, generation: token, outcome: .completed, detail: self.findStatus)
+            if InteractionDiagnostics.isEnabled { self.findOperation = .findPrevious; self.findGeneration = token }
         }
     }
 

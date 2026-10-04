@@ -100,12 +100,28 @@ func pathContains(root: String, path: String) -> Bool {
     path == root || path.hasPrefix(root == "/" ? "/" : root + "/")
 }
 
-/// Reject malformed persisted inventories before they can become scanner inputs.
+struct DiscoveryInventoryError: LocalizedError {
+    let path: String
+    let duplicateID: String
+    var errorDescription: String? {
+        "Cannot read discovery inventory \(path): duplicate grouped manual ID \(duplicateID). Keep one entry per content/section/language identity. Move this app-owned inventory aside to rebuild it; original manual sources are separate."
+    }
+}
+
+/// Reject malformed grouped inventories; raw checkpoint entries may still share content IDs.
 func loadDiscovery(_ url: URL) throws -> LibraryScan {
     do {
         let saved = try JSONDecoder().decode(LibraryScan.self, from: Data(contentsOf: url))
         try validateManualPages(saved.pages)
+        var identities: Set<String> = []
+        for page in saved.pages {
+            guard identities.insert(page.id).inserted else {
+                throw DiscoveryInventoryError(path: url.path, duplicateID: page.id)
+            }
+        }
         return saved
+    } catch let error as DiscoveryInventoryError {
+        throw error
     } catch {
         throw ManualToolError(message: "Cannot read discovery inventory \(url.path): \(error.localizedDescription) Move this app-owned inventory aside to rebuild it; original manuals and PDF catalogs are separate.")
     }

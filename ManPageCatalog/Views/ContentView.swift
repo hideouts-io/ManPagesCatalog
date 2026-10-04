@@ -44,7 +44,14 @@ struct ContentView: View {
                     }.labelsHidden().accessibilityLabel("Source filter").accessibilityIdentifier("sourceFilter")
                     Toggle("Include full text", isOn: $library.fullText).toggleStyle(.checkbox).accessibilityIdentifier("fullTextSearch")
                     if library.fullText { Text("Covers \(library.indexedCount) of \(library.pages.count) indexed manuals").font(.caption).foregroundStyle(.secondary) }
-                    Text("\(library.results.count) results").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("resultCount")
+                    Text("\(library.results.count) results").font(.caption).foregroundStyle(.secondary)
+                        .accessibilityElement(children: .ignore).accessibilityLabel("\(library.results.count) results")
+                        .accessibilityIdentifier("resultCount")
+                        .background {
+                            if InteractionDiagnostics.isEnabled {
+                                InteractionViewProbe(operation: .search, generation: library.resultsGeneration).frame(width: 0, height: 0)
+                            }
+                        }
                 }.padding(12).background(.bar)
                 Divider()
                 List(Array(library.results.prefix(1000)), selection: $selectedID) { result in
@@ -96,7 +103,11 @@ struct ContentView: View {
             }
             ToolbarItem {
                 GlobalSearchField(text: $library.query, focusRequest: searchFocusRequest) {
-                    Task { if let page = await library.firstResultForCurrentSearch() { open(page) } }
+                    InteractionDiagnostics.readerInput(window: reader.webView.window)
+                    Task {
+                        if let page = await library.firstResultForCurrentSearch() { open(page) }
+                        else { InteractionDiagnostics.readerInputCancelled() }
+                    }
                 }.frame(minWidth: 240, idealWidth: 320, maxWidth: 420)
             }
             ToolbarItem {
@@ -120,7 +131,12 @@ struct ContentView: View {
             reader.onReference = { name, section in followReference(name: name, section: section) }
             library.openLibrary()
         }
-        .onChange(of: selectedID) { id in if let page = library.results.first(where: { $0.id == id })?.page { open(page) } }
+        .onChange(of: selectedID) { id in
+            if let page = library.results.first(where: { $0.id == id })?.page {
+                InteractionDiagnostics.readerInput(window: reader.webView.window)
+                open(page)
+            }
+        }
         .onChange(of: library.pages.count) { count in
             if count > 0, let reference = pendingReference {
                 pendingReference = nil

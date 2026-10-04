@@ -39,6 +39,7 @@ struct GlobalSearchField: NSViewRepresentable {
 
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSSearchField else { return }
+            InteractionDiagnostics.searchInput(query: field.stringValue, window: field.window)
             parent.text = field.stringValue
         }
 

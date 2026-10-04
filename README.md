@@ -15,7 +15,7 @@ ManPagesCatalog brings the documentation already installed on your Mac into one 
 
 > **Scope:** Discovery, search, reading, and command preparation never execute a documented command. Running a draft or starting an interactive shell is a separate, explicit action on your real Mac. Deep Scan reports what it inspected and what it could not inspect; a completed traversal is not a guarantee that every manual on the machine was found.
 
-This README describes the native [`v2.0.0-beta.1` prerelease](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v2.0.0-beta.1) and the matching ZIP tracked with this source. The older [`v1.0.0` release](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v1.0.0), dated March 29, 2026, contains the earlier PDF-generation app and its external dependencies.
+The native [`v2.0.0-beta.1` prerelease](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v2.0.0-beta.1) and tracked ZIP are the published snapshot. This README also describes subsequent source improvements; build the current source to use them. The older [`v1.0.0` release](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v1.0.0), dated March 29, 2026, contains the earlier PDF-generation app and its external dependencies.
 
 ## Contents
 
@@ -118,6 +118,8 @@ Deep Scan does not use sudo, bypass macOS permissions, or automatically download
 **Discovery** locates and validates candidate files. **Indexing** extracts descriptions and searchable text. Scan & Sources displays the current stage, location, counts, and available pause/resume controls. Search and the open manual remain usable while this work proceeds.
 
 Use **Pause Scan** to save pending traversal, **Resume Discovery** to continue it, or **Index Discovered Manuals** when discovered manuals still need metadata. Pausing indexing preserves the indexed work already completed. A new Standard or Deep Scan replaces the pending traversal checkpoint.
+
+Indexing formats at most four manuals concurrently and commits their text atomically in batches. Metadata publication is coalesced; Return-to-open follows a refresh of the same search while rejecting a changed query or scope. Resuming reconciles committed index records with the retained inventory, avoiding repeated formatting after interrupted metadata saving. A changed source requires rediscovery before indexing under its old identity. Storage failures stop indexing with a specific error while retaining usable catalog data.
 
 Discovery streams folder entries instead of storing a whole directory listing. Pending-work counts represent unfinished folders and interrupted entries; their unseen children are not counted. At most 128 directory streams are open. Deeper folders, union-mounted subtrees and folders with unsupported entry names produce explicit coverage gaps.
 
@@ -242,6 +244,7 @@ The application stores its catalog in `~/Library/Application Support/ManPagesCat
 | `search.sqlite` | Local search index and extracted metadata |
 | `discovery-v1.json` | Discovered manuals, source locations, and coverage |
 | `scan-checkpoint-v1.json` | Pending traversal for resumable discovery |
+| `scan-performance-v1.json` | Local timing, queues, sampled memory and durability diagnostics |
 
 Selected folders and appearance preferences use macOS app preferences. Original manuals and existing `~/ManPages` PDF catalogs are not rewritten. The historical Python generator remains in the repository for reference and is not included in the native app bundle.
 
@@ -316,6 +319,14 @@ xcodebuild -project ManPageCatalog.xcodeproj -scheme ManPageCatalog \
 
 Tests use installed `launchctl`, `ping`, `ifconfig`, `netstat`, and `scutil` manuals plus temporary collections. They exercise extraction, renamed compressed sources, aliases, duplicates, incremental scans, cancellation, durable resume, stale-write isolation, SQLite search, WebKit Find/history, PDF rendering, and legacy catalog preservation. Native export-panel integration verifies window ownership, panel cancellation, competing-sheet rejection and interaction with another window. PTY integration covers explicit startup, input, resizing, Ctrl-C, multiline execution, and attached-job cleanup. The test host uses an empty automatic scan scope and a separate temporary index.
 
+### Measure indexing and interaction locally
+
+[ManualRichCorpus.swift](Benchmarks/ManualRichCorpus.swift) defines the explicit CLI for deterministic source generation, physical verification, independent inventory/FTS verification and ownership-checked cleanup. Generation requires file, storage and free-space limits; interruption retains its checkpoint. Build it with `Benchmarks/build_manual_rich_corpus.sh /absolute/output/path`. [LibraryBenchmark.swift](Benchmarks/LibraryBenchmark.swift), built with `Benchmarks/build_library_benchmark.sh /absolute/output/path`, exercises the production library with an isolated output directory, cancellation threshold and deadline. The existing traversal corpus harness remains separate; generated paths never count as inspected files.
+
+Coverage export includes a companion performance report. Its optional `indexingWork` measurements separate bounded formatter batches, committed database transactions, metadata publication and atomic inventory writes; these are wall times with explicit boundaries. Discovery and indexing rates, pending/active queues, cancellation durability and sampled main-process RSS remain distinct. Kernel maximum RSS and rendered interactions require separate observations.
+
+For a bounded interaction probe, launch with `--env MANPAGES_INTERACTION_DIAGNOSTICS=/absolute/existing/local/folder/interactions.jsonl`. It records handler/binding-to-service and native-view-state acknowledgements for search, reading and Find. These endpoints do not establish event-to-pixel latency or the painting of every result row. Output is local only, limited to 2,000 records per session and 32 MiB per file; it can contain search queries and manual identities. No interaction file is created unless explicitly enabled. The stable-ID [ResponsivenessProbe.mjs](Benchmarks/ResponsivenessProbe.mjs) measures automation action-to-AX observation separately, including automation overhead. Sampling cost and host/cache conditions must accompany performance comparisons.
+
 ### Verify an extracted application
 
 After building Release, package and extract it into a separate directory, then launch with a fresh test catalog:
@@ -343,9 +354,11 @@ The manually triggered workflow builds/tests on a macOS runner and creates a uni
 
 ## Validation and roadmap
 
-The current native build passed **26 integration tests** and a universal Release build. Production scans verified two separate two-million-file corpora, including one directory containing two million siblings, exact manual locations/content groups and durable pause/resume. An isolated copy of the extracted app discovered and indexed the fixtures in a fresh library; large-scan rendered checks covered search retention, reading, Find previous/next, history, pause, PDF and local coverage/telemetry saving. PDFKit reopened the saved PDF and exported coverage/telemetry matched the actual scan. These are selected-root checks on Apple Silicon, not complete-machine discovery, Intel runtime compatibility or full accessibility compliance.
+The current native build passed **31 integration tests** and a universal Release build. Production indexing inspected 10,010 manual source locations grouped into 10,006 manuals, with independently verified content markers and locations. The serial indexing run took 90.582 seconds versus 136.333 seconds baseline; kernel maximum RSS was 267.39 MiB versus 427.08 MiB. Cache state and host activity were uncontrolled, so these observations are not universal speed guarantees. Earlier selected-root scans verified two separate two-million-file corpora, including one directory containing two million siblings.
 
-[TODO.md](TODO.md) is the single prioritized implementation backlog. It distinguishes verified work, implemented-but-unverified behavior, and work not yet implemented. The next coherent milestone is **bound manual-rich indexing and publication**: measure at least 10,000 distinct manuals, bound indexing/snapshot costs and verify retained search/reading responsiveness. Whole-filesystem coverage, directory aliases and recovery across filesystem changes remain part of that discovery plan.
+The extracted app retained search, reading and Find during indexing, durably paused at 4,172 indexed manuals in 236.573 ms, and resumed the remaining 5,834 after relaunch with exact final parity. A separate fresh library discovered three installed manuals and exported a readable 12-page PDF. Native user-triggered view acknowledgements measured 38–415 ms; background search refreshes reached 714 ms. These are handler/binding-to-state measurements, not event-to-pixel latency. Coverage and companion performance exports matched retained data through the production writing API, but the rendered coverage Save sheet disabled Export in both the large and fresh libraries. Its cause remains unresolved; GUI coverage saving is currently unverified.
+
+[TODO.md](TODO.md) is the single prioritized implementation backlog. The next coherent milestone is **restore reliable coverage export**, followed by the remaining manual-rich latency and storage-pressure checks. Whole-filesystem coverage, directory aliases and recovery across filesystem changes remain open. These are selected-root checks on Apple Silicon, not complete-machine discovery, Intel runtime compatibility or full accessibility compliance.
 
 Subsequent work covers embedded includes, more compression formats, preformatted pages, formatter compatibility, keyboard/VoiceOver verification, older-OS/Intel validation, and notarized distribution. Tabs, persistent bookmarks, semantic search, Spotlight, App Intents, SSH sessions, and multiplexing are not current features.
 

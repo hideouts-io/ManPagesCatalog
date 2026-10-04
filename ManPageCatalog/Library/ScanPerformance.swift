@@ -54,6 +54,27 @@ struct ScanResponsivenessSample: Codable, Sendable {
     let mainActorDelayMilliseconds: Double
 }
 
+struct IndexingCost: Codable, Sendable {
+    let operations: Int
+    let totalSeconds: Double
+    let worstSeconds: Double
+
+    static var empty: IndexingCost { IndexingCost(operations: 0, totalSeconds: 0, worstSeconds: 0) }
+
+    func adding(seconds: Double) -> IndexingCost {
+        IndexingCost(operations: operations + 1, totalSeconds: totalSeconds + seconds, worstSeconds: max(worstSeconds, seconds))
+    }
+}
+
+struct IndexingWorkPerformance: Codable, Sendable {
+    let formatterBatches: IndexingCost
+    let indexTransactions: IndexingCost
+    let metadataPublications: IndexingCost
+    let inventoryWrites: IndexingCost
+    let lastInventoryBytes: UInt64
+    let peakInventoryBytes: UInt64
+}
+
 struct ScanPerformanceReport: Codable, Sendable {
     let schemaVersion: Int
     let scanID: UUID
@@ -65,6 +86,7 @@ struct ScanPerformanceReport: Codable, Sendable {
     let elapsedSeconds: Double
     let discovery: DiscoveryPerformance
     let indexing: IndexingPerformance?
+    let indexingWork: IndexingWorkPerformance?
     let cancellationLatencySeconds: Double?
     let durability: String?
     let memorySamples: [ScanMemorySample]
@@ -129,6 +151,12 @@ actor ScanPerformanceRecorder {
     private var worstDelay: Double = 0
     private var memorySampleCount: Int = 0
     private var responsivenessSampleCount: Int = 0
+    private var formatterBatches = IndexingCost.empty
+    private var indexTransactions = IndexingCost.empty
+    private var metadataPublications = IndexingCost.empty
+    private var inventoryWrites = IndexingCost.empty
+    private var lastInventoryBytes: UInt64 = 0
+    private var peakInventoryBytes: UInt64 = 0
 
     init(scanID: UUID, mode: String, roots: [URL], initialDirectories: Int, initialFiles: Int, initialManualLocations: Int) {
         self.scanID = scanID
@@ -187,6 +215,15 @@ actor ScanPerformanceRecorder {
     }
 
     func finishIndexing() { indexingEnded = ProcessInfo.processInfo.systemUptime }
+
+    func recordFormatterBatch(seconds: Double) { formatterBatches = formatterBatches.adding(seconds: seconds) }
+    func recordIndexTransaction(seconds: Double) { indexTransactions = indexTransactions.adding(seconds: seconds) }
+    func recordMetadataPublication(seconds: Double) { metadataPublications = metadataPublications.adding(seconds: seconds) }
+    func recordInventoryWrite(seconds: Double, bytes: UInt64) {
+        inventoryWrites = inventoryWrites.adding(seconds: seconds)
+        lastInventoryBytes = bytes
+        peakInventoryBytes = max(peakInventoryBytes, bytes)
+    }
 
     func requestCancellation(atUptime: Double) {
         if cancellationRequested == nil { cancellationRequested = atUptime }
@@ -247,6 +284,7 @@ actor ScanPerformanceRecorder {
             "Pending traversal counts selected roots awaiting inspection, unfinished directory streams and interrupted entries; unknown children are not queued or counted. At most 128 directory streams are open across the traversal. Deeper and union-mounted directories are reported as unsupported. Version 2 checkpoints verify directory identity, entry modification time and the ordered consumed prefix on resume; status timestamps are diagnostic only. This is not a filesystem snapshot.",
             "Cumulative rates cover this segment; lastInterval rates cover only the latest progress callback interval.",
             "Indexing completed counts finished attempts; succeeded counts confirmed FTS entries and failed counts formatting/indexing failures. Indexing manualsPerSecond uses succeeded, not attempts.",
+            "Optional indexingWork contains cumulative wall durations: each formatter batch runs at most four concurrent formatters; indexTransactions includes actor waiting and committed batch storage; metadataPublications is synchronous MainActor array publication; inventoryWrites includes actor waiting, encoding and atomic persistence. These costs are separate boundaries, not CPU attribution or pixel presentation. Formatter batch observations can include failed or cancelled manuals; transactions count committed batches, publications count applied metadata, and inventory writes count successfully measured persisted files. Incomplete manual attempts remain in the unfinished phase.",
             "Resident memory uses task_info(MACH_TASK_BASIC_INFO), sampled by the caller at a target interval of one second. Actual intervals may be longer. The observed peak is a sample maximum, not the kernel high-water mark or discovery-only allocation.",
             "MainActor delay is a scheduling probe, not click-to-render latency. Rendered interaction requires separate UI verification.",
             "Each sample series retains its first 3600 samples; sample counts and peak values continue for the entire segment. Actual sample spacing is recorded by elapsedSeconds.",
@@ -260,7 +298,11 @@ actor ScanPerformanceRecorder {
         else if indexingEnded == nil { limitations.append("Indexing did not complete in this segment.") }
         return ScanPerformanceReport(schemaVersion: 1, scanID: scanID, mode: mode, roots: roots, started: started,
                                      ended: ended, state: state, elapsedSeconds: now - began,
-                                     discovery: discovery, indexing: indexing, cancellationLatencySeconds: cancellation,
+                                     discovery: discovery, indexing: indexing, indexingWork: indexingBegan.map { _ in
+                                         IndexingWorkPerformance(formatterBatches: formatterBatches, indexTransactions: indexTransactions,
+                                             metadataPublications: metadataPublications, inventoryWrites: inventoryWrites,
+                                             lastInventoryBytes: lastInventoryBytes, peakInventoryBytes: peakInventoryBytes)
+                                     }, cancellationLatencySeconds: cancellation,
                                      durability: durability, memorySamples: memorySamples,
                                      observedPeakResidentBytes: peakResident, responsivenessSamples: responsivenessSamples,
                                      worstMainActorDelayMilliseconds: worstDelay, memorySampleCount: memorySampleCount,
@@ -363,6 +405,19 @@ func validateScanPerformance(_ report: ScanPerformanceReport) throws {
     if report.state == .completed {
         guard discovery.finished, report.indexing?.finished ?? true else {
             throw ManualToolError(message: "Completed diagnostics contain an unfinished discovery or indexing phase.")
+        }
+    }
+    if let work = report.indexingWork {
+        guard report.indexing != nil, work.peakInventoryBytes >= work.lastInventoryBytes else {
+            throw ManualToolError(message: "Indexing work diagnostics require an indexing phase and consistent inventory sizes.")
+        }
+        for cost in [work.formatterBatches, work.indexTransactions, work.metadataPublications, work.inventoryWrites] {
+            guard cost.operations >= 0, cost.totalSeconds.isFinite, cost.totalSeconds >= 0, cost.totalSeconds <= report.elapsedSeconds + 0.000001,
+                  cost.worstSeconds.isFinite, cost.worstSeconds >= 0, cost.worstSeconds <= cost.totalSeconds + 0.000001,
+                  cost.worstSeconds <= report.elapsedSeconds + 0.000001,
+                  cost.operations != 0 || (cost.totalSeconds == 0 && cost.worstSeconds == 0) else {
+                throw ManualToolError(message: "Invalid indexing cost counters or monotonic durations.")
+            }
         }
     }
     if let cancellation = report.cancellationLatencySeconds {

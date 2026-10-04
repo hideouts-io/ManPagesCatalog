@@ -135,6 +135,10 @@ func manualText(source: URL) async throws -> String {
 
 func formattedManualText(source: URL) async throws -> FormattedManualText {
     let input = try await manualInput(source: source)
+    return try await formattedManualText(input: input)
+}
+
+func formattedManualText(input: ManualInput) async throws -> FormattedManualText {
     let formatted = try await formatManual(input: input, arguments: ["-Tutf8", "-O", "width=1000"])
     let plain = try await runManualTool(executable: URL(fileURLWithPath: "/usr/bin/col"), arguments: ["-b"],
                                       directory: URL(fileURLWithPath: "/"), input: formatted.bytes)

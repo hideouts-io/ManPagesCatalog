@@ -15,11 +15,16 @@ struct ManualDetailView: View {
                 if reader.showFind {
                     HStack {
                         Image(systemName: "doc.text.magnifyingglass")
-                        TextField("Find in \(page.title)…", text: $reader.findQuery)
+                        TextField("Find in \(page.title)…", text: Binding(get: { reader.findQuery }, set: { reader.setFindQuery($0) }))
                             .textFieldStyle(.roundedBorder).focused($findFocused)
                             .accessibilityIdentifier("readerFind")
                             .onSubmit { reader.findNext() }
                         Text(reader.findStatus).font(.caption).accessibilityIdentifier("readerFindStatus")
+                            .background {
+                                if InteractionDiagnostics.isEnabled {
+                                    InteractionViewProbe(operation: reader.findOperation, generation: reader.findGeneration).frame(width: 0, height: 0)
+                                }
+                            }
                         Button { reader.findPrevious() } label: { Image(systemName: "chevron.up") }
                             .accessibilityLabel("Previous match").accessibilityIdentifier("previousMatch")
                         Button { reader.findNext() } label: { Image(systemName: "chevron.down") }
@@ -56,6 +61,11 @@ struct ManualDetailView: View {
                         .foregroundStyle(.secondary).multilineTextAlignment(.center)
                     Text("⌘K  Search manuals       ⌘F  Find in the open page").font(.caption).foregroundStyle(.secondary)
                 }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .background {
+            if InteractionDiagnostics.isEnabled {
+                InteractionViewProbe(operation: .reader, generation: reader.readerGeneration).frame(width: 0, height: 0)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .findInPage)) { _ in

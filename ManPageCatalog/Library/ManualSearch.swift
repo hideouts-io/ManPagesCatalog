@@ -21,30 +21,51 @@ func manualKeywords(name: String) -> String {
 func rankedManuals(pages: [ManualPage], query: String, section: String?, root: String?, fullText: Set<String>) -> [ManualSearchResult] {
     let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let tokens = term.split(whereSeparator: \.isWhitespace).map(String.init)
-    return pages.compactMap { original -> ManualSearchResult? in
-        let locations = original.locations.filter { (section == nil || $0.section == section) && (root == nil || pathContains(root: root!, path: $0.source.path)) }
-        guard let location = locations.first(where: { $0.name.lowercased() == term }) ?? locations.first(where: { !term.isEmpty && $0.name.lowercased().contains(term) }) ?? locations.first else { return nil }
-        let page = original.at(location)
-        let name = page.name.lowercased()
-        if term.isEmpty { return ManualSearchResult(page: page, reason: "", rank: 0) }
-        if name == term || page.title.lowercased() == term { return ManualSearchResult(page: page, reason: "Exact name", rank: 0) }
-        if name.hasPrefix(term) { return ManualSearchResult(page: page, reason: "Name prefix", rank: 1) }
-        if name.contains(term) { return ManualSearchResult(page: page, reason: "Name", rank: 2) }
-        let description = page.description.lowercased()
-        if tokens.allSatisfy({ description.contains($0) }) { return ManualSearchResult(page: page, reason: "Description", rank: 3) }
-        let keywords = manualKeywords(name: name)
-        if tokens.allSatisfy({ (keywords + " " + description).contains($0) }) { return ManualSearchResult(page: page, reason: "Related concept", rank: 4) }
-        if term.count >= 4 && abs(name.count - term.count) <= 1 && editDistanceOne(name, term) {
-            return ManualSearchResult(page: page, reason: "Similar spelling", rank: 5)
+    return pages.compactMap { manualSearchResult(original: $0, term: term, tokens: tokens, section: section, root: root, fullText: fullText) }
+        .sorted(by: manualSearchOrder)
+}
+
+func cancellableRankedManuals(pages: [ManualPage], query: String, section: String?, root: String?, fullText: Set<String>) throws -> [ManualSearchResult] {
+    let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let tokens = term.split(whereSeparator: \.isWhitespace).map(String.init)
+    var results: [ManualSearchResult] = []
+    for (ordinal, page) in pages.enumerated() {
+        if ordinal % 64 == 0 { try Task.checkCancellation() }
+        if let result = manualSearchResult(original: page, term: term, tokens: tokens, section: section, root: root, fullText: fullText) {
+            results.append(result)
         }
-        if page.indexed && fullText.contains(page.id) { return ManualSearchResult(page: page, reason: "Full text", rank: 6) }
-        return nil
-    }.sorted { left, right in
-        if left.rank != right.rank { return left.rank < right.rank }
-        if left.page.name != right.page.name { return left.page.name.localizedStandardCompare(right.page.name) == .orderedAscending }
-        if left.page.section != right.page.section { return left.page.section.localizedStandardCompare(right.page.section) == .orderedAscending }
-        return left.page.id < right.page.id
     }
+    try Task.checkCancellation()
+    let sorted = results.sorted(by: manualSearchOrder)
+    try Task.checkCancellation()
+    return sorted
+}
+
+private func manualSearchResult(original: ManualPage, term: String, tokens: [String], section: String?, root: String?, fullText: Set<String>) -> ManualSearchResult? {
+    let locations = original.locations.filter { (section == nil || $0.section == section) && (root == nil || pathContains(root: root!, path: $0.source.path)) }
+    guard let location = locations.first(where: { $0.name.lowercased() == term }) ?? locations.first(where: { !term.isEmpty && $0.name.lowercased().contains(term) }) ?? locations.first else { return nil }
+    let page = original.at(location)
+    let name = page.name.lowercased()
+    if term.isEmpty { return ManualSearchResult(page: page, reason: "", rank: 0) }
+    if name == term || page.title.lowercased() == term { return ManualSearchResult(page: page, reason: "Exact name", rank: 0) }
+    if name.hasPrefix(term) { return ManualSearchResult(page: page, reason: "Name prefix", rank: 1) }
+    if name.contains(term) { return ManualSearchResult(page: page, reason: "Name", rank: 2) }
+    let description = page.description.lowercased()
+    if tokens.allSatisfy({ description.contains($0) }) { return ManualSearchResult(page: page, reason: "Description", rank: 3) }
+    let keywords = manualKeywords(name: name)
+    if tokens.allSatisfy({ (keywords + " " + description).contains($0) }) { return ManualSearchResult(page: page, reason: "Related concept", rank: 4) }
+    if term.count >= 4 && abs(name.count - term.count) <= 1 && editDistanceOne(name, term) {
+        return ManualSearchResult(page: page, reason: "Similar spelling", rank: 5)
+    }
+    if page.indexed && fullText.contains(page.id) { return ManualSearchResult(page: page, reason: "Full text", rank: 6) }
+    return nil
+}
+
+private func manualSearchOrder(_ left: ManualSearchResult, _ right: ManualSearchResult) -> Bool {
+    if left.rank != right.rank { return left.rank < right.rank }
+    if left.page.name != right.page.name { return left.page.name.localizedStandardCompare(right.page.name) == .orderedAscending }
+    if left.page.section != right.page.section { return left.page.section.localizedStandardCompare(right.page.section) == .orderedAscending }
+    return left.page.id < right.page.id
 }
 
 func editDistanceOne(_ left: String, _ right: String) -> Bool {
