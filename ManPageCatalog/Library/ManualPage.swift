@@ -62,6 +62,8 @@ struct DiscoveryProgress: Sendable {
     let directories: Int
     let files: Int
     let manuals: Int
+    let pending: Int
+    let peakPending: Int
 }
 
 /// Identical resolved content shares one search entry; names and every encountered location survive.

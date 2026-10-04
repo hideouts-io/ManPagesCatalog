@@ -74,7 +74,7 @@ func manualPrefix(_ url: URL) throws -> Data {
         close(descriptor)
         throw DiscoveryAccessError(kind: .excluded, message: "File changed type or became cloud-only before reading.")
     }
-    var bytes = [UInt8](repeating: 0, count: 65536)
+    var bytes = [UInt8](repeating: 0, count: min(65536, Int(metadata.st_size)))
     let count = read(descriptor, &bytes, bytes.count)
     let failure = errno
     guard close(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -127,8 +127,15 @@ func manualCompression(_ bytes: Data) -> ManualCompression? {
 }
 
 func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetworkRoots: [URL]) async throws -> ManualPage? {
-    let filename = manualFilename(file)
-    let prefix = try manualPrefix(file)
+    let filename = autoreleasepool { manualFilename(file) }
+    // An empty regular file cannot contain a manual header or compression signature.
+    if state.size == 0 {
+        if filename != nil {
+            throw DiscoveryAccessError(kind: .unsupported, message: "Candidate is empty and has no manual content.")
+        }
+        return nil
+    }
+    let prefix = try autoreleasepool { try manualPrefix(file) }
     let compression = manualCompression(prefix)
     let compressed = compression != nil || ["gz", "Z", "bz2"].contains(file.pathExtension)
     if compressed && ["tar", "cpio"].contains(file.deletingPathExtension().pathExtension) {
@@ -181,27 +188,37 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
     var state = checkpoint
     var cached: [String: ManualPage] = [:]
     for page in previous { for location in page.locations { cached[location.source.path] = page.at(location) } }
-    var lastProgress = Date.distantPast
-    var lastSave = Date.distantPast
+    var segmentPeak = state.pendingCount
+    var lastProgress = -Double.infinity
+    var lastSave = -Double.infinity
     for index in state.roots.indices {
         let root = state.roots[index].root
         while let url = state.roots[index].pending.last, !Task.isCancelled {
+            var inspectedRegular = false
             do {
-                try requireDiscoveryVolume(url: url, allowedNetworkRoots: state.plan.allowedNetworkRoots)
-                let file = try materializedFileState(url)
+                // Foundation path/volume bridges create temporary objects on this long-lived worker.
+                let file = try autoreleasepool {
+                    try requireDiscoveryVolume(url: url, allowedNetworkRoots: state.plan.allowedNetworkRoots)
+                    return try materializedFileState(url)
+                }
                 if file.directory {
                     if let first = state.visited[file.identity] {
                         state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .excluded, reason: "Directory already traversed at \(first); avoids duplicate traversal and link cycles."))
                         state.roots[index].pending.removeLast()
                     } else {
-                        let children = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [])
+                        let children = try autoreleasepool {
+                            let names = try FileManager.default.contentsOfDirectory(atPath: url.path)
+                            try Task.checkCancellation()
+                            return names.sorted(by: >).map { url.appendingPathComponent($0) }
+                        }
                         state.visited[file.identity] = url.path
                         state.roots[index].directories += 1
                         state.roots[index].pending.removeLast()
-                        state.roots[index].pending += children.map { url.appendingPathComponent($0.lastPathComponent) }.sorted { $0.path > $1.path }
+                        state.roots[index].pending += children
                     }
                 } else {
                     if file.regular {
+                        inspectedRegular = true
                         let page: ManualPage?
                         if let old = cached[url.path], old.problem == nil || old.indexed,
                            old.locations.first(where: { $0.source == url })?.stamp == "direct:" + file.stamp {
@@ -216,7 +233,6 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
                             state.roots[index].manuals += 1
                             if let problem = page.problem, !page.indexed { state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .unsupported, reason: problem)) }
                         }
-                        state.roots[index].files += 1
                     } else {
                         state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .excluded, reason: "Special filesystem entry; sockets, devices and pipes are never read."))
                     }
@@ -227,21 +243,29 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
                 state.roots[index].issues.append(discoveryIssue(url: url, error: error))
                 state.roots[index].pending.removeLast()
             }
-            if Date().timeIntervalSince(lastProgress) > 0.15 {
+            if inspectedRegular { state.roots[index].files += 1 }
+            state.peakPending = max(state.peakPending ?? 0, state.pendingCount)
+            segmentPeak = max(segmentPeak, state.pendingCount)
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastProgress > 0.15 {
                 await progress(DiscoveryProgress(path: url.path, directories: state.roots.reduce(0) { $0 + $1.directories },
-                                                  files: state.roots.reduce(0) { $0 + $1.files }, manuals: state.pages.count))
-                lastProgress = Date()
+                                                  files: state.roots.reduce(0) { $0 + $1.files }, manuals: state.pages.count,
+                                                  pending: state.pendingCount, peakPending: segmentPeak))
+                lastProgress = now
             }
-            if Date().timeIntervalSince(lastSave) > 5 {
+            if now - lastSave > 5 {
                 state.updated = Date()
                 try await save(state)
-                lastSave = Date()
+                lastSave = ProcessInfo.processInfo.systemUptime
             }
         }
         if Task.isCancelled { break }
     }
     state.updated = Date()
     try await save(state)
+    await progress(DiscoveryProgress(path: "Discovery stopped", directories: state.roots.reduce(0) { $0 + $1.directories },
+        files: state.roots.reduce(0) { $0 + $1.files }, manuals: state.pages.count, pending: state.pendingCount,
+        peakPending: segmentPeak))
     return state.snapshot
 }
 

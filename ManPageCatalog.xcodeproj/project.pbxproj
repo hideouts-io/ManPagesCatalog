@@ -26,6 +26,7 @@
 		66416D026B5F378211223742 /* ManualPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B8D6176FEC551191B7FC43F /* ManualPage.swift */; };
 		739B57F35D3ED2F6A446E9CC /* ManualDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94B5D632E956F98325ECC4A7 /* ManualDetailView.swift */; };
 		88158E9DB9DCAF0D8368A9F0 /* GenerateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC81C30F634E2641B421371 /* GenerateView.swift */; };
+		88E001E755F683300A923488 /* PerformanceIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4C5B1C8B2F8BDB0BA19FB8B /* PerformanceIntegrationTests.swift */; };
 		966C891CB5E9E8FDD8E14762 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2D1AACE5F5C6EE1CFB147CAD /* WebKit.framework */; };
 		AC208E9C2FC7E4932302C40E /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 2892751D714A1D29429AA29A /* SwiftTerm */; };
 		AD35564B134E6026CEAF72FD /* CatalogGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4A54B9040641DBE3A1204A /* CatalogGenerator.swift */; };
@@ -41,6 +42,7 @@
 		DF531142D27B45B44B75B1D3 /* ManualSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079EF1B02AF7AF19D3A98FBA /* ManualSearch.swift */; };
 		E048704D6E473855A54D5CF8 /* CommandDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FD5C5BFD59DDDC45DFB4822 /* CommandDraft.swift */; };
 		F24549BA1AF555D4EFD05949 /* ManualSearchIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7BF7D8795E54FE58F99749 /* ManualSearchIndex.swift */; };
+		F58B711AF3D45270CF8EFD92 /* ScanPerformance.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7F547D2B61F41A70CB4AEDF /* ScanPerformance.swift */; };
 		FC5513A1504105A9A203C3F4 /* PDFReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53C1E21A000D17C697FB2E93 /* PDFReader.swift */; };
 		FC8BE13C4FBF829A5ED0D957 /* ManPageCatalogApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E410E7A965177D39C2E750B7 /* ManPageCatalogApp.swift */; };
 /* End PBXBuildFile section */
@@ -81,6 +83,7 @@
 		A2101FCFC3968030A1957B9D /* ManualDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualDiscovery.swift; sourceTree = "<group>"; };
 		A6E889097857520F0B0EEECA /* ManualHTML.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualHTML.swift; sourceTree = "<group>"; };
 		B10A7AFD51BEDBFAA499BC22 /* PDFDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFDetailView.swift; sourceTree = "<group>"; };
+		B4C5B1C8B2F8BDB0BA19FB8B /* PerformanceIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceIntegrationTests.swift; sourceTree = "<group>"; };
 		C013DADA15BAC2ABDC0401A8 /* ManualCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualCatalog.swift; sourceTree = "<group>"; };
 		C06864A512AF71966B77493E /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
 		C1546C758F0E48B5383A06BE /* TerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSession.swift; sourceTree = "<group>"; };
@@ -93,6 +96,7 @@
 		F0D5ECA1252DCDDA1CA5DE4F /* SwiftTerm-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "SwiftTerm-LICENSE.txt"; sourceTree = "<group>"; };
 		F1C14685E3C4CF5BA4329360 /* TerminalIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalIntegrationTests.swift; sourceTree = "<group>"; };
 		F3838CF2F21703BC935D9B1A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F7F547D2B61F41A70CB4AEDF /* ScanPerformance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanPerformance.swift; sourceTree = "<group>"; };
 		F9ED93D94DC3205BE66E2273 /* DiscoveryCheckpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryCheckpoint.swift; sourceTree = "<group>"; };
 		FC99C3E6091C76F34E5F48D4 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -150,6 +154,7 @@
 				9B8D6176FEC551191B7FC43F /* ManualPage.swift */,
 				079EF1B02AF7AF19D3A98FBA /* ManualSearch.swift */,
 				0A7BF7D8795E54FE58F99749 /* ManualSearchIndex.swift */,
+				F7F547D2B61F41A70CB4AEDF /* ScanPerformance.swift */,
 			);
 			path = Library;
 			sourceTree = "<group>";
@@ -222,6 +227,7 @@
 				92A29C938BEF4E09EA90DEE4 /* CatalogIntegrationTests.swift */,
 				2534D0F63D6EC5F6C1765E5B /* DiscoveryIntegrationTests.swift */,
 				C1A15F20ADF2D1F8952C7AF8 /* NativeBrowserIntegrationTests.swift */,
+				B4C5B1C8B2F8BDB0BA19FB8B /* PerformanceIntegrationTests.swift */,
 				F1C14685E3C4CF5BA4329360 /* TerminalIntegrationTests.swift */,
 			);
 			path = NativeTests;
@@ -363,6 +369,7 @@
 				F24549BA1AF555D4EFD05949 /* ManualSearchIndex.swift in Sources */,
 				C71541D666BA7B23B259E9CB /* PDFDetailView.swift in Sources */,
 				FC5513A1504105A9A203C3F4 /* PDFReader.swift in Sources */,
+				F58B711AF3D45270CF8EFD92 /* ScanPerformance.swift in Sources */,
 				AE517440544796ECDC330257 /* SourcesView.swift in Sources */,
 				B8022487201B7480F79941E9 /* TerminalPane.swift in Sources */,
 				39243C8DC9B07C1D5157E5D9 /* TerminalSession.swift in Sources */,
@@ -376,6 +383,7 @@
 				2B2FA040EA4E6D778E828A5C /* CatalogIntegrationTests.swift in Sources */,
 				52AC22CD1FB5E3801DD9B8E9 /* DiscoveryIntegrationTests.swift in Sources */,
 				314F88AAA993E32665C2E359 /* NativeBrowserIntegrationTests.swift in Sources */,
+				88E001E755F683300A923488 /* PerformanceIntegrationTests.swift in Sources */,
 				B859160EA1688D8258467E74 /* TerminalIntegrationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

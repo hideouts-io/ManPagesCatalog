@@ -18,8 +18,13 @@ struct ManualIndexOutcome: Sendable {
 
 @MainActor
 final class LibraryStore: ObservableObject {
-    @Published private(set) var pages: [ManualPage] = []
-    @Published private(set) var coverage: [SourceCoverage] = []
+    @Published private(set) var pages: [ManualPage] = [] {
+        didSet { sourceRoots = manualSourceRoots(pages: pages, coverage: coverage) }
+    }
+    @Published private(set) var coverage: [SourceCoverage] = [] {
+        didSet { sourceRoots = manualSourceRoots(pages: pages, coverage: coverage) }
+    }
+    private(set) var sourceRoots: [String] = []
     @Published private(set) var results: [ManualSearchResult] = []
     @Published private(set) var status = "Ready to discover installed manuals"
     @Published private(set) var errorMessage: String?
@@ -35,6 +40,10 @@ final class LibraryStore: ObservableObject {
     @Published var root: String? { didSet { search() } }
     @Published var fullText = false { didSet { search() } }
     @Published private(set) var scanProgress: DiscoveryProgress?
+    @Published private(set) var performanceReport: ScanPerformanceReport?
+    private var performanceRecorder: ScanPerformanceRecorder?
+    private var performanceSampling: Task<Void, Never>?
+    private var cancellationRequested: Double?
     @Published private(set) var scanMode = "Standard Scan"
     @Published private(set) var additionalRoots: [String]
     private var index: ManualSearchIndex?
@@ -56,7 +65,6 @@ final class LibraryStore: ObservableObject {
     }
 
     var sections: [String] { Set(pages.map(\.section)).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
-    var sourceRoots: [String] { Set(pages.flatMap(\.locations).map { $0.root.path } + coverage.map { $0.root.path }).sorted() }
     var indexedCount: Int { pages.filter(\.indexed).count }
     var problemPages: [ManualPage] { pages.filter { $0.problem != nil } }
 
@@ -111,6 +119,10 @@ final class LibraryStore: ObservableObject {
                 search()
             }
         }
+        if performanceReport == nil {
+            let report = directory.appendingPathComponent("scan-performance-v1.json")
+            if FileManager.default.fileExists(atPath: report.path) { performanceReport = try loadScanPerformance(report) }
+        }
     }
 
     func scan() {
@@ -140,6 +152,9 @@ final class LibraryStore: ObservableObject {
 
     private func startScan(checkpoint: @escaping () async throws -> DiscoveryCheckpoint) {
         indexingTask?.cancel()
+        performanceSampling?.cancel()
+        performanceRecorder = nil
+        cancellationRequested = nil
         let request = UUID()
         operationID = request
         errorMessage = nil
@@ -158,6 +173,15 @@ final class LibraryStore: ObservableObject {
                 scanMode = selected.title
                 await checkpointFile.activate(request)
                 let cache = Dictionary(try await index.metadata().map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
+                try Task.checkCancellation()
+                guard request == operationID else { return }
+                let recorder = ScanPerformanceRecorder(scanID: request, mode: selected.title, roots: selected.plan.roots,
+                    initialDirectories: selected.roots.reduce(0) { $0 + $1.directories }, initialFiles: selected.roots.reduce(0) { $0 + $1.files }, initialManualLocations: selected.pages.count)
+                performanceRecorder = recorder
+                await recorder.recordDiscovery(directories: selected.roots.reduce(0) { $0 + $1.directories }, files: selected.roots.reduce(0) { $0 + $1.files }, manualLocations: selected.pages.count, pending: selected.pendingCount, path: "Preparing discovery")
+                try Task.checkCancellation()
+                guard request == operationID else { return }
+                beginPerformanceSampling(recorder: recorder, request: request)
                 let previous = pages
                 let file = checkpointFile
                 let worker = Task.detached(priority: .utility) {
@@ -182,36 +206,48 @@ final class LibraryStore: ObservableObject {
                 guard request == operationID else { return }
                 scanProgress = nil
                 if scan.cancelled || Task.isCancelled { throw CancellationError() }
+                await recorder.finishDiscovery()
                 try await checkpointFile.remove(request: request)
+                try Task.checkCancellation()
+                guard request == operationID else { return }
                 resumableScan = false
                 try await finishIndexing(request: request, index: index)
-            } catch is CancellationError {
+                await finishPerformance(state: .completed, request: request, durability: "Discovery inventory and search index saved")
                 guard request == operationID else { return }
                 isIndexing = false
+            } catch is CancellationError {
+                guard request == operationID else { return }
                 scanProgress = nil
                 let wasIndexing = phase == .indexing
                 phase = .paused
+                await finishPerformance(state: .cancelled, request: request, durability: "Worker stopped; latest checkpoint and retained inventory saved")
+                guard request == operationID else { return }
+                isIndexing = false
                 status = wasIndexing ? "Indexing paused • \(indexedCount) of \(pages.count) manuals indexed • reading and name search are ready" : "\(scanMode) paused • \(pages.count) manuals retained • \(pendingLocations) queued locations"
                 search()
             } catch {
                 guard request == operationID else { return }
-                isIndexing = false
                 scanProgress = nil
                 phase = .needsAttention
+                await finishPerformance(state: .failed, request: request, durability: "Failure; inspect error and last successful checkpoint")
+                guard request == operationID else { return }
+                isIndexing = false
                 errorMessage = "Library refresh failed: \(error.localizedDescription)"
                 status = "Available results remain searchable; review Scan & Sources"
             }
         }
     }
 
-    private func acceptDiscovery(saved: DiscoveryCheckpoint, snapshot: LibraryScan, pages: [ManualPage], request: UUID) throws {
+    private func acceptDiscovery(saved: DiscoveryCheckpoint, snapshot: LibraryScan, pages: [ManualPage], request: UUID) async throws {
+        guard request == operationID else { return }
+        let inventory = LibraryScan(pages: pages, coverage: snapshot.coverage, cancelled: saved.pendingCount > 0)
+        try await checkpointFile.saveInventory(inventory, request: request)
         guard request == operationID else { return }
         self.pages = pages
         coverage = snapshot.coverage
         pendingLocations = saved.pendingCount
         checkpointDate = saved.updated
         resumableScan = saved.pendingCount > 0
-        try saveDiscovery()
         search()
     }
 
@@ -221,26 +257,51 @@ final class LibraryStore: ObservableObject {
         operationID = request
         isIndexing = true
         errorMessage = nil
+        performanceSampling?.cancel()
+        performanceRecorder = nil
+        cancellationRequested = nil
         indexingTask = Task {
             do {
+                try Task.checkCancellation()
+                guard request == operationID else { return }
                 try initializeLibrary()
                 guard let index else { throw ManualToolError(message: "Search index was not initialized.") }
+                await checkpointFile.activate(request)
+                try Task.checkCancellation()
+                guard request == operationID else { return }
+                let recorder = ScanPerformanceRecorder(scanID: request, mode: "Indexing Only", roots: coverage.map(\.root),
+                    initialDirectories: 0, initialFiles: 0, initialManualLocations: 0)
+                performanceRecorder = recorder
+                await recorder.finishDiscovery()
+                try Task.checkCancellation()
+                guard request == operationID else { return }
+                beginPerformanceSampling(recorder: recorder, request: request)
                 try await finishIndexing(request: request, index: index)
-            } catch is CancellationError {
+                await finishPerformance(state: .completed, request: request, durability: "Retained inventory and search index saved")
                 guard request == operationID else { return }
                 isIndexing = false
+            } catch is CancellationError {
+                guard request == operationID else { return }
                 phase = .paused
+                await finishPerformance(state: .cancelled, request: request, durability: "Indexing stopped; retained inventory and completed index writes saved")
+                guard request == operationID else { return }
+                isIndexing = false
                 status = "Indexing paused • \(indexedCount) of \(pages.count) manuals indexed • reading and name search are ready"
             } catch {
                 guard request == operationID else { return }
-                isIndexing = false
                 phase = .needsAttention
+                await finishPerformance(state: .failed, request: request, durability: "Indexing failed; inspect error and retained inventory")
+                guard request == operationID else { return }
+                isIndexing = false
                 errorMessage = "Indexing failed: \(error.localizedDescription)"
             }
         }
     }
 
     private func finishIndexing(request: UUID, index: ManualSearchIndex) async throws {
+        try Task.checkCancellation()
+        guard request == operationID else { throw CancellationError() }
+        let recorder = performanceRecorder
         phase = .indexing
         let pending = pages.filter { !$0.indexed && $0.problem == nil }.sorted { left, right in
             let leftCommand = ["1", "8"].contains(String(left.section.prefix(1)))
@@ -251,32 +312,92 @@ final class LibraryStore: ObservableObject {
         }
         indexCompleted = 0
         indexTotal = pending.count
-        do { try await enrich(pending: pending, request: request, index: index) }
+        await recorder?.beginIndexing(total: pending.count)
+        try Task.checkCancellation()
+        guard request == operationID else { throw CancellationError() }
+        do { try await enrich(pending: pending, request: request, index: index, recorder: recorder) }
         catch {
-            if request == operationID { try saveDiscovery(); search() }
+            if request == operationID {
+                try await saveDiscovery(request: request)
+                guard request == operationID else { throw CancellationError() }
+                search()
+            }
             throw error
         }
         guard request == operationID else { return }
-        isIndexing = false
+        await recorder?.finishIndexing()
+        guard request == operationID else { return }
+        try await saveDiscovery(request: request)
+        try Task.checkCancellation()
+        guard request == operationID else { throw CancellationError() }
         phase = .ready
-        try saveDiscovery()
         let issues = coverage.reduce(0) { $0 + $1.issues.count }
         status = "\(pages.count) unique manuals • \(indexedCount) indexed • \(issues) coverage notices; review Scan & Sources"
         search()
     }
 
-    private func discoveryProgress(_ value: DiscoveryProgress, request: UUID) {
+    private func discoveryProgress(_ value: DiscoveryProgress, request: UUID) async {
+        guard request == operationID else { return }
+        let recorder = performanceRecorder
+        await recorder?.recordDiscovery(directories: value.directories, files: value.files, manualLocations: value.manuals, pending: value.pending, path: value.path)
+        await recorder?.recordPendingPeak(value.peakPending)
         guard request == operationID else { return }
         scanProgress = value
         status = "\(scanMode): \(value.directories) folders • \(value.files) files checked • \(value.manuals) manual locations"
     }
 
-    private func saveDiscovery() throws {
+    private func saveDiscovery(request: UUID) async throws {
+        guard request == operationID else { throw CancellationError() }
         let snapshot = LibraryScan(pages: pages, coverage: coverage, cancelled: resumableScan)
-        try JSONEncoder().encode(snapshot).write(to: directory.appendingPathComponent("discovery-v1.json"), options: .atomic)
+        try await checkpointFile.saveInventory(snapshot, request: request)
+        guard request == operationID else { throw CancellationError() }
     }
 
-    func stop() { indexingTask?.cancel() }
+    func stop() {
+        if cancellationRequested == nil { cancellationRequested = ProcessInfo.processInfo.systemUptime }
+        indexingTask?.cancel()
+    }
+
+    /// Legacy coverage remains an array; timing diagnostics are a named companion export.
+    func exportCoverage(to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(coverage).write(to: url, options: .atomic)
+        guard let performanceReport else { throw ManualToolError(message: "Coverage was saved, but this catalog has no measured scan diagnostics. Run a scan before exporting performance.") }
+        try encoder.encode(performanceReport).write(to: url.deletingPathExtension().appendingPathExtension("performance.json"), options: .atomic)
+    }
+
+    private func beginPerformanceSampling(recorder: ScanPerformanceRecorder, request: UUID) {
+        performanceSampling?.cancel()
+        performanceSampling = Task {
+            do {
+                while !Task.isCancelled, request == operationID {
+                    try await recorder.sampleMemory()
+                    await recorder.sampleResponsiveness()
+                    let report = await recorder.snapshot()
+                    guard !Task.isCancelled, request == operationID else { return }
+                    performanceReport = report
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            } catch is CancellationError { return }
+            catch { if request == operationID { errorMessage = "Local scan diagnostics failed: \(error.localizedDescription)" } }
+        }
+    }
+
+    private func finishPerformance(state: ScanPerformanceState, request: UUID, durability: String) async {
+        guard request == operationID, let recorder = performanceRecorder else { return }
+        let sampler = performanceSampling
+        sampler?.cancel()
+        await sampler?.value
+        guard request == operationID else { return }
+        if let cancellationRequested { await recorder.requestCancellation(atUptime: cancellationRequested) }
+        await recorder.finish(state: state, durability: durability)
+        let report = await recorder.snapshot()
+        guard request == operationID else { return }
+        performanceReport = report
+        do { try JSONEncoder().encode(report).write(to: directory.appendingPathComponent("scan-performance-v1.json"), options: .atomic) }
+        catch { errorMessage = "Cannot preserve local scan diagnostics: \(error.localizedDescription)" }
+    }
 
     func addRoot(_ url: URL) {
         if !additionalRoots.contains(url.path) { additionalRoots.append(url.path) }
@@ -309,12 +430,16 @@ final class LibraryStore: ObservableObject {
         return matches.first(where: { $0.root == preferredRoot }) ?? matches.first
     }
 
-    private func enrich(pending: [ManualPage], request: UUID, index: ManualSearchIndex) async throws {
+    private func enrich(pending: [ManualPage], request: UUID, index: ManualSearchIndex, recorder: ScanPerformanceRecorder?) async throws {
         // Four formatter jobs keep indexing bounded while the main window stays responsive.
+        var succeeded = 0
+        var failed = 0
         for offset in stride(from: 0, to: pending.count, by: 4) {
             try Task.checkCancellation()
             let batch = Array(pending[offset..<min(offset + 4, pending.count)])
-            let outcomes = try await withThrowingTaskGroup(of: ManualIndexOutcome.self) { group in
+            await recorder?.recordIndexing(completed: offset, queued: max(0, pending.count - offset - batch.count), active: batch.count, succeeded: succeeded, failed: failed)
+            guard request == operationID else { throw CancellationError() }
+            let outcomes = await withTaskGroup(of: ManualIndexOutcome?.self) { group in
                 for page in batch {
                     group.addTask {
                         do {
@@ -322,15 +447,17 @@ final class LibraryStore: ObservableObject {
                             let description = descriptionFromFormattedManual(formatted.text)
                             try await index.store(page: page, text: formatted.text, description: description, diagnostic: formatted.diagnostic)
                             return ManualIndexOutcome(id: page.id, description: description, problem: formatted.diagnostic.isEmpty ? nil : formatted.diagnostic, indexed: true)
-                        } catch is CancellationError { throw CancellationError() }
+                        } catch is CancellationError { return nil }
                         catch { return ManualIndexOutcome(id: page.id, description: "", problem: "\(page.source.path): \(error.localizedDescription)", indexed: false) }
                     }
                 }
                 var values: [ManualIndexOutcome] = []
-                for try await value in group { values.append(value) }
+                for await value in group { if let value { values.append(value) } }
                 return values
             }
             guard request == operationID else { throw CancellationError() }
+            succeeded += outcomes.filter(\.indexed).count
+            failed += outcomes.filter { !$0.indexed }.count
             let updates = Dictionary(uniqueKeysWithValues: outcomes.map { ($0.id, $0) })
             pages = pages.map { page in
                 guard let value = updates[page.id] else { return page }
@@ -340,9 +467,17 @@ final class LibraryStore: ObservableObject {
                 updated.indexed = value.indexed
                 return updated
             }
-            indexCompleted = min(offset + 4, pending.count)
+            let completed = succeeded + failed
+            await recorder?.recordIndexing(completed: completed, queued: pending.count - completed, active: 0, succeeded: succeeded, failed: failed)
+            guard request == operationID else { throw CancellationError() }
+            indexCompleted = completed
             status = "Indexing descriptions & full text: \(min(offset + 4, pending.count)) of \(pending.count) changed manuals • names are searchable now"
-            if offset % 128 == 124 { try saveDiscovery(); search() }
+            if Task.isCancelled || outcomes.count != batch.count { throw CancellationError() }
+            if offset % 128 == 124 {
+                try await saveDiscovery(request: request)
+                guard request == operationID else { throw CancellationError() }
+                search()
+            }
         }
     }
 
@@ -370,4 +505,9 @@ final class LibraryStore: ObservableObject {
             }
         }
     }
+}
+
+/// Source filters depend on inventory changes, not high-frequency progress or search updates.
+func manualSourceRoots(pages: [ManualPage], coverage: [SourceCoverage]) -> [String] {
+    Set(pages.flatMap(\.locations).map { $0.root.path } + coverage.map { $0.root.path }).sorted()
 }

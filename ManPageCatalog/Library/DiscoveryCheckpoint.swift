@@ -20,6 +20,7 @@ struct DiscoveryCheckpoint: Codable, Sendable {
     var roots: [DiscoveryRootState]
     var visited: [String: String]
     var pages: [ManualPage]
+    var peakPending: Int?
 
     var pendingCount: Int { roots.reduce(0) { $0 + $1.pending.count } }
     var snapshot: LibraryScan {
@@ -38,10 +39,10 @@ struct DiscoveryCheckpoint: Codable, Sendable {
 func newDiscoveryCheckpoint(plan: DiscoveryPlan, title: String) -> DiscoveryCheckpoint {
     DiscoveryCheckpoint(version: 1, title: title, started: Date(), bootReference: Date().addingTimeInterval(-ProcessInfo.processInfo.systemUptime), plan: plan, updated: Date(), roots: plan.roots.map {
         DiscoveryRootState(root: $0, pending: [$0], directories: 0, files: 0, manuals: 0, issues: [])
-    }, visited: [:], pages: [])
+    }, visited: [:], pages: [], peakPending: plan.roots.count)
 }
 
-/// The request identity serializes writes and prevents a cancelled worker from replacing newer progress.
+/// The request identity serializes checkpoint/inventory writes and rejects superseded workers.
 actor DiscoveryCheckpointFile {
     private let url: URL
     private var request: UUID?
@@ -52,8 +53,24 @@ actor DiscoveryCheckpointFile {
 
     func save(_ checkpoint: DiscoveryCheckpoint, request: UUID) throws {
         guard self.request == request else { return }
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(checkpoint).write(to: url, options: .atomic)
+        try autoreleasepool {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(checkpoint).write(to: url, options: .atomic)
+        }
+    }
+
+    /// Encoding large retained catalogs runs off MainActor and releases temporary bridged objects.
+    func saveInventory(_ inventory: LibraryScan, request: UUID) throws {
+        guard self.request == request else { return }
+        let destination = url.deletingLastPathComponent().appendingPathComponent("discovery-v1.json")
+        do {
+            try autoreleasepool {
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try JSONEncoder().encode(inventory).write(to: destination, options: .atomic)
+            }
+        } catch {
+            throw ManualToolError(message: "Cannot save retained discovery inventory \(destination.path): \(error.localizedDescription) Check available storage and write access to the app's library folder.")
+        }
     }
 
     func remove(request: UUID) throws {
@@ -70,6 +87,7 @@ actor DiscoveryCheckpointFile {
             }
             guard saved.version == 1, saved.roots.map(\.root) == saved.plan.roots,
                   saved.plan.roots.allSatisfy(\.isFileURL), saved.plan.allowedNetworkRoots.allSatisfy(\.isFileURL),
+                  saved.peakPending.map({ $0 >= saved.pendingCount }) ?? true,
                   saved.roots.allSatisfy({ state in
                       state.files >= 0 && state.directories >= 0 && state.manuals >= 0 &&
                       state.pending.allSatisfy { $0.isFileURL && pathContains(root: state.root.path, path: $0.path) }

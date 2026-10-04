@@ -50,6 +50,12 @@ struct SourcesView: View {
                                 .accessibilityIdentifier("discoveryCurrentPath").accessibilityLabel("Current scanning location").accessibilityValue(progress.path)
                         }
                     }
+                    if let report = library.performanceReport {
+                        Text("Discovery: \(report.discovery.cumulative.filesPerSecond.formatted(.number.precision(.fractionLength(0)))) files/sec • \(report.discovery.cumulative.directoriesPerSecond.formatted(.number.precision(.fractionLength(0)))) folders/sec • \(report.discovery.pendingQueue) queued • peak \(report.discovery.peakPendingQueue)")
+                            .font(.caption).monospacedDigit().accessibilityIdentifier("scanPerformanceSummary")
+                        Text("Local diagnostics only. Export Coverage saves a separate .performance.json report alongside the coverage file.")
+                            .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("localDiagnosticsExplanation")
+                    }
                     if library.resumableScan, let date = library.checkpointDate {
                         HStack {
                             Text("\(library.pendingLocations) queued locations • checkpoint saved")
@@ -145,9 +151,7 @@ struct SourcesView: View {
         panel.nameFieldStringValue = "ManPages-scan-coverage.json"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(library.coverage).write(to: url, options: .atomic)
+            try library.exportCoverage(to: url)
             reportError = nil
         } catch { reportError = "Cannot write coverage report to \(url.path): \(error.localizedDescription)" }
     }
