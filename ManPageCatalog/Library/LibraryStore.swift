@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Darwin
 import CryptoKit
 
 enum LibraryPhase: String {
@@ -404,11 +405,66 @@ final class LibraryStore: ObservableObject {
 
     /// Legacy coverage remains an array; timing diagnostics are a named companion export.
     func exportCoverage(to url: URL) throws {
+        guard let performanceReport else {
+            throw ManualToolError(message: "Cannot export coverage to \(url.path): this catalog has no measured scan diagnostics. Run a scan before exporting. Neither output file was changed.")
+        }
+        let companion = url.deletingPathExtension().appendingPathExtension("performance.json")
+        guard url.isFileURL, companion.isFileURL, url.standardizedFileURL != companion.standardizedFileURL else {
+            throw ManualToolError(message: "Cannot export coverage to \(url): coverage and diagnostics require two distinct local file destinations. Neither output file was changed.")
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(coverage).write(to: url, options: .atomic)
-        guard let performanceReport else { throw ManualToolError(message: "Coverage was saved, but this catalog has no measured scan diagnostics. Run a scan before exporting performance.") }
-        try encoder.encode(performanceReport).write(to: url.deletingPathExtension().appendingPathExtension("performance.json"), options: .atomic)
+        let reports: [(destination: URL, bytes: Data)]
+        let originals: [Data?]
+        do {
+            reports = [(url, try encoder.encode(coverage)), (companion, try encoder.encode(performanceReport))]
+            originals = try reports.map { try coverageExportOriginal(at: $0.destination) }
+        } catch {
+            throw ManualToolError(message: "Cannot prepare coverage export to \(url.path) and \(companion.path): \(error.localizedDescription) Neither output file was changed.")
+        }
+        var attemptedIndex = 0
+        var replaced: [Int] = []
+        do {
+            for (index, report) in reports.enumerated() {
+                attemptedIndex = index
+                try report.bytes.write(to: report.destination, options: .atomic)
+                replaced.append(index)
+            }
+        } catch {
+            let originalFailure = error.localizedDescription
+            var restoration: [String] = []
+            let failed = reports[attemptedIndex].destination
+            do {
+                if try coverageExportOriginal(at: failed) == originals[attemptedIndex] {
+                    restoration.append("Failed atomic destination \(failed.path) retains its previous bytes or absence; it was not rewritten.")
+                } else {
+                    replaced.append(attemptedIndex)
+                    restoration.append("Failed atomic destination \(failed.path) differs from its captured prior state and requires restoration.")
+                }
+            } catch {
+                restoration.append("Cannot verify failed atomic destination \(failed.path): \(error.localizedDescription) Its state could not be confirmed; it was not rewritten.")
+            }
+            for index in replaced.reversed() {
+                let report = reports[index]
+                do {
+                    if let original = originals[index] {
+                        try original.write(to: report.destination, options: .atomic)
+                        restoration.append("Restored previous bytes at \(report.destination.path).")
+                    } else {
+                        if try coverageExportOriginal(at: report.destination) != nil {
+                            try FileManager.default.removeItem(at: report.destination)
+                        }
+                        restoration.append("Restored the absence of \(report.destination.path).")
+                    }
+                } catch {
+                    restoration.append("Restoration failed at \(report.destination.path): \(error.localizedDescription) Its prior state could not be confirmed.")
+                }
+            }
+            for index in reports.indices where index > attemptedIndex {
+                restoration.append("Not written: \(reports[index].destination.path).")
+            }
+            throw ManualToolError(message: "Coverage export failed while writing \(failed.path): \(originalFailure) \(restoration.joined(separator: " "))")
+        }
     }
 
     private func beginPerformanceSampling(recorder: ScanPerformanceRecorder, request: UUID) {
@@ -606,6 +662,52 @@ final class LibraryStore: ObservableObject {
             }
         }
     }
+}
+
+/// Prior-output backups are limited to 64 MiB each, including growth during reads; never follow file symlinks or hydrate placeholders.
+private func coverageExportOriginal(at url: URL) throws -> Data? {
+    let maximumBackupBytes: Int = 64 * 1024 * 1024
+    var metadata = stat()
+    guard lstat(url.path, &metadata) == 0 else {
+        let code = errno
+        if code == ENOENT { return nil }
+        throw ManualToolError(message: "Cannot inspect coverage output \(url.path): \(String(cString: strerror(code))) (errno \(code)).")
+    }
+    guard metadata.st_mode & S_IFMT == S_IFREG, metadata.st_flags & UInt32(SF_DATALESS) == 0 else {
+        throw ManualToolError(message: "Coverage output \(url.path) is a directory, symbolic link, special file or cloud-only placeholder. Choose an ordinary writable file destination.")
+    }
+    guard metadata.st_size >= 0, metadata.st_size <= Int64(maximumBackupBytes) else {
+        throw ManualToolError(message: "Cannot preserve existing coverage output \(url.path): its size is \(metadata.st_size) bytes, outside the 0...\(maximumBackupBytes)-byte (64 MiB) backup limit. Choose a new export destination.")
+    }
+    let descriptor = open(url.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else {
+        let code = errno
+        throw ManualToolError(message: "Cannot open existing coverage output \(url.path) without following links: \(String(cString: strerror(code))) (errno \(code)).")
+    }
+    let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    var opened = stat()
+    guard fstat(descriptor, &opened) == 0, opened.st_mode & S_IFMT == S_IFREG,
+          opened.st_flags & UInt32(SF_DATALESS) == 0, opened.st_dev == metadata.st_dev, opened.st_ino == metadata.st_ino else {
+        try handle.close()
+        throw ManualToolError(message: "Existing coverage output \(url.path) changed identity, type or materialization before its prior bytes could be preserved. Neither output file was changed.")
+    }
+    guard opened.st_size >= 0, opened.st_size <= Int64(maximumBackupBytes) else {
+        try handle.close()
+        throw ManualToolError(message: "Cannot preserve existing coverage output \(url.path): its opened size is \(opened.st_size) bytes, outside the 0...\(maximumBackupBytes)-byte (64 MiB) backup limit. Choose a new export destination.")
+    }
+    do {
+        var bytes = Data()
+        while let chunk = try handle.read(upToCount: min(64 * 1024, maximumBackupBytes + 1 - bytes.count)), !chunk.isEmpty {
+            bytes.append(chunk)
+            guard bytes.count <= maximumBackupBytes else {
+                try handle.close()
+                throw ManualToolError(message: "Existing coverage output \(url.path) grew beyond the \(maximumBackupBytes)-byte (64 MiB) backup limit while being read. Choose a new export destination.")
+            }
+        }
+        try handle.close()
+        return bytes
+    }
+    catch { throw ManualToolError(message: "Cannot preserve existing coverage output \(url.path): \(error.localizedDescription)") }
 }
 
 /// Source filters depend on inventory changes, not high-frequency progress or search updates.

@@ -8,14 +8,16 @@ func chooseExportDestination(window: NSWindow, filename: String, contentType: UT
         throw ManualToolError(message: "Cannot open \(title): this window already has an open dialog. Finish or cancel that dialog, then try exporting again.")
     }
     let panel = NSSavePanel()
+    // Setting the identifier restores saved panel state; configure this before the export properties.
+    panel.identifier = NSUserInterfaceItemIdentifier(identifier)
+    panel.setAccessibilityIdentifier(identifier)
     panel.allowedContentTypes = [contentType]
+    if #available(macOS 15, *) { panel.showsContentTypes = true }
     panel.nameFieldStringValue = filename
     panel.title = title
     panel.prompt = "Export"
     panel.canCreateDirectories = true
     panel.isExtensionHidden = false
-    panel.identifier = NSUserInterfaceItemIdentifier(identifier)
-    panel.setAccessibilityIdentifier(identifier)
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL?, Error>) in
         panel.beginSheetModal(for: window) { response in
             switch response {

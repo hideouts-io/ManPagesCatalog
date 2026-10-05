@@ -49,5 +49,25 @@ final class ExportIntegrationTests: XCTestCase {
         XCTAssertNil(destination)
         for _ in 0..<250 where owner.attachedSheet != nil { try await Task.sleep(nanoseconds: 20_000_000) }
         XCTAssertNil(owner.attachedSheet)
+        let jsonCompleted = expectation(description: "Repeated native JSON export cancelled")
+        var didCancelJSON: Bool = false
+        let jsonSelection = Task { @MainActor in
+            defer { didCancelJSON = true; jsonCompleted.fulfill() }
+            return try await chooseExportDestination(window: owner, filename: "coverage.json", contentType: .json,
+                title: "Export Scan Coverage", identifier: "testCoveragePanel")
+        }
+        defer { jsonSelection.cancel() }
+        for _ in 0..<250 where owner.attachedSheet == nil { try await Task.sleep(nanoseconds: 20_000_000) }
+        let jsonPanel = try XCTUnwrap(owner.attachedSheet as? NSSavePanel)
+        XCTAssertTrue(jsonPanel.sheetParent === owner)
+        XCTAssertEqual(jsonPanel.allowedContentTypes, [.json])
+        XCTAssertFalse(jsonPanel.allowsOtherFileTypes)
+        jsonPanel.cancel(nil)
+        await fulfillment(of: [jsonCompleted], timeout: 5)
+        guard didCancelJSON else { throw ManualToolError(message: "Native JSON export did not cancel within five seconds.") }
+        let jsonDestination = try await jsonSelection.value
+        XCTAssertNil(jsonDestination)
+        for _ in 0..<250 where owner.attachedSheet != nil { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertNil(owner.attachedSheet)
     }
 }

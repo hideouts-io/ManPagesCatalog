@@ -135,6 +135,105 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertEqual(performance.discovery.files, 1)
         XCTAssertEqual(performance.indexing?.succeeded, 1)
         XCTAssertEqual(performance.indexing?.failed, 0)
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let coverageBytes = try Data(contentsOf: export)
+        let performanceBytes = try Data(contentsOf: companion)
+        try store.exportCoverage(to: export)
+        XCTAssertEqual(try Data(contentsOf: export), coverageBytes)
+        XCTAssertEqual(try Data(contentsOf: companion), performanceBytes)
+        XCTAssertEqual(try loadScanPerformance(companion).scanID, store.performanceReport?.scanID)
+
+        let unmeasured = LibraryStore(directory: directory.appendingPathComponent("unmeasured"), defaults: defaults)
+        XCTAssertThrowsError(try unmeasured.exportCoverage(to: export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("no measured scan diagnostics"))
+            XCTAssertTrue(error.localizedDescription.contains("Neither output file was changed"))
+        }
+        XCTAssertEqual(try Data(contentsOf: export), coverageBytes)
+        XCTAssertEqual(try Data(contentsOf: companion), performanceBytes)
+
+        let retainedCompanion = directory.appendingPathComponent("retained-performance.json")
+        try FileManager.default.moveItem(at: companion, to: retainedCompanion)
+        try FileManager.default.createDirectory(at: companion, withIntermediateDirectories: false)
+        let marker = companion.appendingPathComponent("owned-conflict.txt")
+        let markerBytes = Data("Retained companion-path directory contents.".utf8)
+        try markerBytes.write(to: marker)
+        XCTAssertThrowsError(try store.exportCoverage(to: export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(companion.path))
+            XCTAssertTrue(error.localizedDescription.contains("Neither output file was changed"))
+        }
+        XCTAssertEqual(try Data(contentsOf: export), coverageBytes)
+        XCTAssertEqual(try Data(contentsOf: marker), markerBytes)
+        XCTAssertEqual(try Data(contentsOf: retainedCompanion), performanceBytes)
+        try FileManager.default.removeItem(at: companion)
+        try FileManager.default.moveItem(at: retainedCompanion, to: companion)
+        try store.exportCoverage(to: export)
+        XCTAssertEqual(try Data(contentsOf: export), coverageBytes)
+        XCTAssertEqual(try Data(contentsOf: companion), performanceBytes)
+        let oversizedBackup = directory.appendingPathComponent("retained-before-oversized-performance.json")
+        try FileManager.default.moveItem(at: companion, to: oversizedBackup)
+        let sparseDescriptor = open(companion.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard sparseDescriptor >= 0 else { throw ManualToolError(message: "Cannot create owned oversized export fixture: errno \(errno).") }
+        let oversizedLength: off_t = 64 * 1024 * 1024 + 1
+        let truncated = ftruncate(sparseDescriptor, oversizedLength)
+        let truncateError = errno
+        let closed = close(sparseDescriptor)
+        guard truncated == 0, closed == 0 else {
+            throw ManualToolError(message: "Cannot prepare owned sparse export fixture: ftruncate=\(truncated), errno=\(truncateError), close=\(closed).")
+        }
+        var beforeOversizedCoverage = stat()
+        var beforeOversizedCompanion = stat()
+        XCTAssertEqual(lstat(export.path, &beforeOversizedCoverage), 0)
+        XCTAssertEqual(lstat(companion.path, &beforeOversizedCompanion), 0)
+        XCTAssertEqual(beforeOversizedCompanion.st_mode & S_IFMT, S_IFREG)
+        XCTAssertEqual(beforeOversizedCompanion.st_size, oversizedLength)
+        XCTAssertLessThan(beforeOversizedCompanion.st_blocks * 512, oversizedLength, "The owned fixture must be sparse rather than consuming 64 MiB of storage.")
+        XCTAssertThrowsError(try store.exportCoverage(to: export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(companion.path))
+            XCTAssertTrue(error.localizedDescription.contains("64 MiB"))
+            XCTAssertTrue(error.localizedDescription.contains("Choose a new export destination"))
+            XCTAssertTrue(error.localizedDescription.contains("Neither output file was changed"))
+        }
+        var afterOversizedCoverage = stat()
+        var afterOversizedCompanion = stat()
+        XCTAssertEqual(lstat(export.path, &afterOversizedCoverage), 0)
+        XCTAssertEqual(lstat(companion.path, &afterOversizedCompanion), 0)
+        XCTAssertEqual(try Data(contentsOf: export), coverageBytes)
+        XCTAssertEqual(try Data(contentsOf: oversizedBackup), performanceBytes)
+        XCTAssertEqual(afterOversizedCoverage.st_ino, beforeOversizedCoverage.st_ino)
+        XCTAssertEqual(afterOversizedCompanion.st_ino, beforeOversizedCompanion.st_ino)
+        XCTAssertEqual(afterOversizedCompanion.st_size, oversizedLength)
+        try FileManager.default.removeItem(at: companion)
+        try FileManager.default.moveItem(at: oversizedBackup, to: companion)
+        let deniedFolder = directory.appendingPathComponent("write-denied")
+        try FileManager.default.createDirectory(at: deniedFolder, withIntermediateDirectories: false)
+        let deniedCoverage = deniedFolder.appendingPathComponent("coverage.json")
+        let deniedCompanion = deniedFolder.appendingPathComponent("coverage.performance.json")
+        try store.exportCoverage(to: deniedCoverage)
+        guard geteuid() != 0, chmod(deniedFolder.path, 0o555) == 0 else {
+            throw ManualToolError(message: "Coverage write-denial integration requires a non-root identity and an owned folder with mode0555 (errno \(errno)).")
+        }
+        defer {
+            if chmod(deniedFolder.path, 0o700) != 0 { XCTFail("Cannot restore owned export folder permissions: errno \(errno).") }
+        }
+        XCTAssertNotEqual(access(deniedFolder.path, W_OK), 0, "Verify actual parent-directory write denial under this identity.")
+        var beforeDenied = stat()
+        var beforeCompanion = stat()
+        XCTAssertEqual(lstat(deniedCoverage.path, &beforeDenied), 0)
+        XCTAssertEqual(lstat(deniedCompanion.path, &beforeCompanion), 0)
+        XCTAssertThrowsError(try store.exportCoverage(to: deniedCoverage)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(deniedCoverage.path))
+            XCTAssertTrue(error.localizedDescription.contains("retains its previous bytes or absence"))
+            XCTAssertTrue(error.localizedDescription.contains("Not written: \(deniedCompanion.path)"))
+            XCTAssertFalse(error.localizedDescription.contains("Restoration failed"))
+        }
+        XCTAssertEqual(try Data(contentsOf: deniedCoverage), coverageBytes)
+        XCTAssertEqual(try Data(contentsOf: deniedCompanion), performanceBytes)
+        var afterDenied = stat()
+        var afterCompanion = stat()
+        XCTAssertEqual(lstat(deniedCoverage.path, &afterDenied), 0)
+        XCTAssertEqual(lstat(deniedCompanion.path, &afterCompanion), 0)
+        XCTAssertEqual(afterDenied.st_ino, beforeDenied.st_ino, "A failed first replacement must not rewrite the original.")
+        XCTAssertEqual(afterCompanion.st_ino, beforeCompanion.st_ino, "An unattempted companion must not be rewritten.")
         let saved = try Data(contentsOf: directory.appendingPathComponent("index/discovery-v1.json"))
         store.scanSelectedRoots()
         store.stop()
