@@ -1,6 +1,6 @@
 import Foundation
 
-struct ManualSearchResult: Identifiable, Sendable {
+struct ManualSearchResult: Identifiable, Equatable, Sendable {
     var id: String { page.id }
     let page: ManualPage
     let reason: String
@@ -53,7 +53,7 @@ private func manualSearchResult(original: ManualPage, term: String, tokens: [Str
     let description = page.description.lowercased()
     if tokens.allSatisfy({ description.contains($0) }) { return ManualSearchResult(page: page, reason: "Description", rank: 3) }
     let keywords = manualKeywords(name: name)
-    if tokens.allSatisfy({ (keywords + " " + description).contains($0) }) { return ManualSearchResult(page: page, reason: "Related concept", rank: 4) }
+    if !keywords.isEmpty && tokens.allSatisfy({ (keywords + " " + description).contains($0) }) { return ManualSearchResult(page: page, reason: "Related concept", rank: 4) }
     if term.count >= 4 && abs(name.count - term.count) <= 1 && editDistanceOne(name, term) {
         return ManualSearchResult(page: page, reason: "Similar spelling", rank: 5)
     }

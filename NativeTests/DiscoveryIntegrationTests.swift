@@ -380,6 +380,24 @@ final class DiscoveryIntegrationTests: XCTestCase {
         try await file.save(checkpoint, request: request)
         let latest = try await file.load()
         XCTAssertEqual(latest?.pendingCount, 1, "A stale worker must not overwrite the new checkpoint")
+        let retainedCheckpoint = try Data(contentsOf: url)
+        guard geteuid() != 0, chmod(directory.path, 0o555) == 0 else {
+            throw ManualToolError(message: "Checkpoint write-denial verification requires a non-root identity and an owned mode0555 folder (errno \(errno)).")
+        }
+        defer {
+            if chmod(directory.path, 0o700) != 0 { XCTFail("Cannot restore owned checkpoint folder permissions: errno \(errno).") }
+        }
+        XCTAssertNotEqual(access(directory.path, W_OK), 0)
+        do {
+            try await file.save(checkpoint, request: newer)
+            XCTFail("Checkpoint replacement must report verified parent-directory write denial")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains(url.path), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("Cannot save resumable discovery checkpoint"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("Check available storage and write access"), error.localizedDescription)
+        }
+        XCTAssertEqual(try Data(contentsOf: url), retainedCheckpoint)
+        guard chmod(directory.path, 0o700) == 0 else { throw ManualToolError(message: "Cannot restore owned checkpoint directory: errno \(errno).") }
         try JSONEncoder().encode(partial).write(to: directory.appendingPathComponent("discovery-v1.json"))
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "DiscoveryResume.\(UUID().uuidString)"))
         let store = await LibraryStore(directory: directory, defaults: defaults)

@@ -84,9 +84,13 @@ actor DiscoveryCheckpointFile {
 
     func save(_ checkpoint: DiscoveryCheckpoint, request: UUID) throws {
         guard self.request == request else { return }
-        try autoreleasepool {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(checkpoint).write(to: url, options: .atomic)
+        do {
+            try autoreleasepool {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try JSONEncoder().encode(checkpoint).write(to: url, options: .atomic)
+            }
+        } catch {
+            throw ManualToolError(message: "Cannot save resumable discovery checkpoint \(url.path): \(error.localizedDescription) Check available storage and write access to the app's library folder. The last successfully saved checkpoint is retained.")
         }
     }
 

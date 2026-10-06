@@ -26,6 +26,12 @@ struct ContentView: View {
                         .accessibilityIdentifier("showSources")
                     Text("\(library.pages.count) manuals\n\(library.indexedCount) indexed manuals")
                         .font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("libraryIndexSummary")
+                        .background {
+                            if InteractionDiagnostics.isEnabled {
+                                InteractionViewProbe(operation: .indexingProgress, generation: library.indexingProgressGeneration).frame(width: 0, height: 0)
+                            }
+                        }
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             }
         } content: {
@@ -54,20 +60,8 @@ struct ContentView: View {
                         }
                 }.padding(12).background(.bar)
                 Divider()
-                List(Array(library.results.prefix(1000)), selection: $selectedID) { result in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(result.page.title).font(.system(.body, design: .monospaced)).fontWeight(.semibold)
-                        Text(result.page.description.isEmpty ? (result.page.problem != nil ? "Description unavailable — see Sources" : result.page.indexed ? "No description in this manual" : "Description not indexed yet") : result.page.description)
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        Text("\(result.page.locations.count) source \(result.page.locations.count == 1 ? "location" : "locations")\(result.reason.isEmpty ? "" : " • " + result.reason)")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        if result.page.language != "unspecified" {
-                            Text("Language: \(result.page.language)").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }.padding(.vertical, 4).tag(result.page.id)
-                        .accessibilityElement(children: .combine)
-                        .accessibilityIdentifier("result-\(result.page.source.path)")
-                }.accessibilityIdentifier("searchResults")
+                ManualResultsList(results: Array(library.results.prefix(1000)), selectedID: selectedID, selection: $selectedID)
+                    .equatable()
                 .overlay {
                     if library.results.isEmpty {
                         VStack(spacing: 10) {
@@ -187,5 +181,33 @@ struct ContentView: View {
     private func restore(_ context: BrowseContext) {
         library.query = context.query; library.section = context.section; library.root = context.root; library.fullText = context.fullText
         linkMessage = ""
+    }
+}
+
+/// Progress publications should not invalidate an unchanged, potentially thousand-row result list.
+private struct ManualResultsList: View, Equatable {
+    let results: [ManualSearchResult]
+    let selectedID: String?
+    @Binding var selection: String?
+
+    static func == (left: ManualResultsList, right: ManualResultsList) -> Bool {
+        left.selectedID == right.selectedID && left.results == right.results
+    }
+
+    var body: some View {
+        List(results, selection: $selection) { result in
+            VStack(alignment: .leading, spacing: 4) {
+                Text(result.page.title).font(.system(.body, design: .monospaced)).fontWeight(.semibold)
+                Text(result.page.description.isEmpty ? (result.page.problem != nil ? "Description unavailable — see Sources" : result.page.indexed ? "No description in this manual" : "Description not indexed yet") : result.page.description)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Text("\(result.page.locations.count) source \(result.page.locations.count == 1 ? "location" : "locations")\(result.reason.isEmpty ? "" : " • " + result.reason)")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                if result.page.language != "unspecified" {
+                    Text("Language: \(result.page.language)").font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(.vertical, 4).tag(result.page.id)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("result-\(result.page.source.path)")
+        }.accessibilityIdentifier("searchResults")
     }
 }

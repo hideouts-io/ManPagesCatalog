@@ -60,6 +60,8 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
         super.init()
         webView.navigationDelegate = self
         webView.setAccessibilityIdentifier("manualWebView")
+        // Initialize WebKit's local content process while the catalog opens, before the first manual activation.
+        _ = webView.loadHTMLString("<!doctype html><html><body></body></html>", baseURL: nil)
     }
 
     func open(page: ManualPage, context: BrowseContext) async {

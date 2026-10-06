@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EEF150000000000000000003 /* SearchRefreshIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF150000000000000000004 /* SearchRefreshIntegrationTests.swift */; };
 		EEF140000000000000000003 /* IndexingIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF140000000000000000004 /* IndexingIntegrationTests.swift */; };
 		EEF140000000000000000001 /* InteractionDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF140000000000000000002 /* InteractionDiagnostics.swift */; };
 		EEF130000000000000000001 /* ExportPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF130000000000000000002 /* ExportPanel.swift */; };
@@ -62,6 +63,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		EEF150000000000000000004 /* SearchRefreshIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRefreshIntegrationTests.swift; sourceTree = "<group>"; };
 		EEF140000000000000000004 /* IndexingIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexingIntegrationTests.swift; sourceTree = "<group>"; };
 		EEF140000000000000000002 /* InteractionDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionDiagnostics.swift; sourceTree = "<group>"; };
 		EEF130000000000000000002 /* ExportPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportPanel.swift; sourceTree = "<group>"; };
@@ -240,6 +242,7 @@
 				C1A15F20ADF2D1F8952C7AF8 /* NativeBrowserIntegrationTests.swift */,
 				B4C5B1C8B2F8BDB0BA19FB8B /* PerformanceIntegrationTests.swift */,
 				EEF140000000000000000004 /* IndexingIntegrationTests.swift */,
+				EEF150000000000000000004 /* SearchRefreshIntegrationTests.swift */,
 				F1C14685E3C4CF5BA4329360 /* TerminalIntegrationTests.swift */,
 			);
 			path = NativeTests;
@@ -400,6 +403,7 @@
 				314F88AAA993E32665C2E359 /* NativeBrowserIntegrationTests.swift in Sources */,
 				88E001E755F683300A923488 /* PerformanceIntegrationTests.swift in Sources */,
 				EEF140000000000000000003 /* IndexingIntegrationTests.swift in Sources */,
+				EEF150000000000000000003 /* SearchRefreshIntegrationTests.swift in Sources */,
 				B859160EA1688D8258467E74 /* TerminalIntegrationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

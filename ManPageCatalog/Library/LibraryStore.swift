@@ -49,10 +49,10 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var checkpointDate: Date?
     @Published private(set) var indexCompleted = 0
     @Published private(set) var indexTotal = 0
-    @Published var query = "" { didSet { search() } }
-    @Published var section: String? { didSet { search() } }
-    @Published var root: String? { didSet { search() } }
-    @Published var fullText = false { didSet { search() } }
+    @Published var query = "" { didSet { if query != oldValue { searchInputChanged() } } }
+    @Published var section: String? { didSet { if section != oldValue { searchInputChanged() } } }
+    @Published var root: String? { didSet { if root != oldValue { searchInputChanged() } } }
+    @Published var fullText = false { didSet { if fullText != oldValue { searchInputChanged() } } }
     @Published private(set) var scanProgress: DiscoveryProgress?
     @Published private(set) var performanceReport: ScanPerformanceReport?
     private var performanceRecorder: ScanPerformanceRecorder?
@@ -63,9 +63,12 @@ final class LibraryStore: ObservableObject {
     private var index: ManualSearchIndex?
     private var indexingTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
+    private var searchRefreshPending = false
     private var operationID = UUID()
     private var searchID = UUID()
+    private var searchInputID = UUID()
     private(set) var resultsGeneration: UUID?
+    private(set) var indexingProgressGeneration: UUID?
     private let directory: URL
     private let defaults: UserDefaults
     private let checkpointFile: DiscoveryCheckpointFile
@@ -114,11 +117,11 @@ final class LibraryStore: ObservableObject {
                     refreshInventoryFilters()
                     phase = saved.pendingCount > 0 ? .paused : .ready
                     status = saved.pendingCount > 0 ? "Saved \(saved.title) • \(pendingLocations) unfinished folders / entries • Resume in Scan & Sources" : "Discovery saved • \(pages.count) manuals ready • Continue indexing in Scan & Sources"
-                    search()
+                    refreshSearch()
                 } else if pages.isEmpty { scan() }
                 else {
                     status = "\(pages.count) manuals ready • \(indexedCount) indexed • Scan to refresh"
-                    search()
+                    refreshSearch()
                 }
             } catch {
                 guard request == operationID else { return }
@@ -136,7 +139,7 @@ final class LibraryStore: ObservableObject {
                 let saved = try loadDiscovery(inventory)
                 pages = saved.pages
                 coverage = saved.coverage
-                search()
+                refreshSearch()
             }
         }
         if index == nil { index = try ManualSearchIndex(url: directory.appendingPathComponent("search.sqlite")) }
@@ -245,7 +248,7 @@ final class LibraryStore: ObservableObject {
                 guard request == operationID else { return }
                 isIndexing = false
                 status = wasIndexing ? "Indexing paused • \(indexedCount) of \(pages.count) manuals indexed • reading and name search are ready" : "\(scanMode) paused • \(pages.count) manuals retained • \(pendingLocations) unfinished folders / entries"
-                search()
+                refreshSearch()
             } catch {
                 guard request == operationID else { return }
                 scanProgress = nil
@@ -269,7 +272,7 @@ final class LibraryStore: ObservableObject {
         pendingLocations = saved.pendingCount
         checkpointDate = saved.updated
         resumableScan = saved.pendingCount > 0
-        search()
+        refreshSearch()
     }
 
     func continueIndexing() {
@@ -357,7 +360,7 @@ final class LibraryStore: ObservableObject {
                     throw IndexPreservationError(indexing: indexingError.localizedDescription, preservation: error.localizedDescription)
                 }
                 guard request == operationID else { throw CancellationError() }
-                search()
+                refreshSearch()
             }
             throw indexingError
         }
@@ -370,7 +373,7 @@ final class LibraryStore: ObservableObject {
         phase = .ready
         let issues = coverage.reduce(0) { $0 + $1.issues.count }
         status = "\(pages.count) unique manuals • \(indexedCount) indexed • \(issues) coverage notices; review Scan & Sources"
-        search()
+        refreshSearch()
     }
 
     private func discoveryProgress(_ value: DiscoveryProgress, request: UUID) async {
@@ -513,13 +516,15 @@ final class LibraryStore: ObservableObject {
 
     func searchAll() { section = nil; root = nil }
 
-    /// Return commits the current query only after its debounced results are ready.
+    /// Return accepts completed results for its input, without waiting for every later metadata refresh.
     func firstResultForCurrentSearch() async -> ManualPage? {
+        let submittedInput = searchInputID
         let submittedQuery = query, submittedSection = section, submittedRoot = root, submittedFullText = fullText
         while !Task.isCancelled {
             let request = searchID
             await searchTask?.value
-            guard !Task.isCancelled, query == submittedQuery, section == submittedSection, root == submittedRoot, fullText == submittedFullText else { return nil }
+            guard !Task.isCancelled, searchInputID == submittedInput, query == submittedQuery, section == submittedSection, root == submittedRoot, fullText == submittedFullText else { return nil }
+            if resultsGeneration == request { return results.first?.page }
             // Metadata publication can refresh the same search while Return is awaiting it.
             if request != searchID { continue }
             guard request == resultsGeneration else { return nil }
@@ -624,42 +629,113 @@ final class LibraryStore: ObservableObject {
                                       request: UUID, recorder: ScanPerformanceRecorder?) async {
         guard request == operationID, !outcomes.isEmpty else { return }
         let began = ProcessInfo.processInfo.systemUptime
+        let progressGeneration = InteractionDiagnostics.isEnabled ? UUID() : nil
+        if let progressGeneration { InteractionDiagnostics.progressStarted(generation: progressGeneration) }
         pages = applyingIndexMetadata(pages: pages, outcomes: outcomes, positions: positions)
         indexCompleted = completed
         status = "Indexing descriptions & full text: \(completed) of \(indexTotal) changed manuals • names are searchable now"
-        search()
+        indexingProgressGeneration = progressGeneration
+        if let progressGeneration { InteractionDiagnostics.progressFinished(generation: progressGeneration, indexedCount: indexedCount) }
+        refreshSearch()
         await recorder?.recordMetadataPublication(seconds: ProcessInfo.processInfo.systemUptime - began)
     }
 
     private func search() {
         searchTask?.cancel()
-        let request = UUID()
-        searchID = request
-        InteractionDiagnostics.searchStarted(generation: request, query: query, section: section, root: root, fullText: fullText)
-        let query = query, section = section, root = root, pages = pages, fullText = fullText, index = index
+        searchRefreshPending = false
+        let request = beginSearch()
         searchTask = Task {
             do {
                 try await Task.sleep(nanoseconds: 80_000_000)
-                let matches: Set<String>
-                if fullText, let index { matches = try await index.matchingIDs(query: query) }
-                else { matches = [] }
-                let worker = Task.detached(priority: .userInitiated) {
-                    try cancellableRankedManuals(pages: pages, query: query, section: section, root: root, fullText: matches)
-                }
-                let found = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
-                guard !Task.isCancelled, request == searchID else { return }
-                results = found
-                resultsGeneration = request
-                InteractionDiagnostics.searchFinished(generation: request, resultCount: found.count, outcome: .completed, detail: nil)
-            } catch is CancellationError {
-                InteractionDiagnostics.searchSuperseded(generation: request)
-                return
+                try await performSearch(request: request)
+            } catch {
+                finishSearchFailure(error, request: request)
             }
-            catch {
-                guard request == searchID else { return }
-                InteractionDiagnostics.searchFinished(generation: request, resultCount: nil, outcome: .failed, detail: error.localizedDescription)
-                errorMessage = "Search failed: \(error.localizedDescription)"
+            finishSearchTask(request: request)
+        }
+    }
+
+    private func searchInputChanged() {
+        searchInputID = UUID()
+        search()
+    }
+
+    /// Metadata publication must not repeatedly restart the user's input debounce or ranking work.
+    private func refreshSearch() {
+        if searchTask != nil {
+            searchRefreshPending = true
+            InteractionDiagnostics.searchRefreshQueued()
+            return
+        }
+        let request = beginSearch()
+        searchTask = Task {
+            do { try await performSearch(request: request) }
+            catch { finishSearchFailure(error, request: request) }
+            finishSearchTask(request: request)
+        }
+    }
+
+    private func beginSearch() -> UUID {
+        let request = UUID()
+        searchID = request
+        InteractionDiagnostics.searchStarted(generation: request, query: query, section: section, root: root, fullText: fullText)
+        return request
+    }
+
+    private func performSearch(request: UUID) async throws {
+        try Task.checkCancellation()
+        guard request == searchID else { throw CancellationError() }
+        searchRefreshPending = false
+        let query = query, section = section, root = root, pages = pages, fullText = fullText, index = index
+        let worker = Task.detached(priority: .userInitiated) {
+            let executionStarted = ProcessInfo.processInfo.systemUptime
+            let matches: Set<String>
+            let fullTextTiming: TimedManualMatches?
+            if fullText, let index {
+                let measured = try await index.measuredMatchingIDs(query: query)
+                matches = measured.ids
+                fullTextTiming = measured
+            } else {
+                matches = []
+                fullTextTiming = nil
             }
+            try Task.checkCancellation()
+            let rankingQueued = ProcessInfo.processInfo.systemUptime
+            let started = ProcessInfo.processInfo.systemUptime
+            let results = try cancellableRankedManuals(pages: pages, query: query, section: section, root: root, fullText: matches)
+            return (results: results, executionStarted: executionStarted, fullTextTiming: fullTextTiming,
+                    rankingQueued: rankingQueued, started: started, finished: ProcessInfo.processInfo.systemUptime)
+        }
+        let found = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+        try Task.checkCancellation()
+        guard request == searchID else { throw CancellationError() }
+        let resultsPublicationStarted = ProcessInfo.processInfo.systemUptime
+        results = found.results
+        resultsGeneration = request
+        InteractionDiagnostics.searchMeasured(generation: request, timing: SearchServiceTiming(
+            executionStartedUptime: found.executionStarted, fullTextStartedUptime: found.fullTextTiming?.startedUptime,
+            fullTextFinishedUptime: found.fullTextTiming?.finishedUptime, rankingQueuedUptime: found.rankingQueued,
+            rankingStartedUptime: found.started, rankingFinishedUptime: found.finished,
+            resultsPublicationStartedUptime: resultsPublicationStarted, resultsCommittedUptime: ProcessInfo.processInfo.systemUptime))
+        InteractionDiagnostics.searchFinished(generation: request, resultCount: found.results.count, outcome: .completed, detail: nil)
+    }
+
+    private func finishSearchFailure(_ error: Error, request: UUID) {
+        guard request == searchID else { return }
+        if error is CancellationError {
+            InteractionDiagnostics.searchSuperseded(generation: request)
+            return
+        }
+        InteractionDiagnostics.searchFinished(generation: request, resultCount: nil, outcome: .failed, detail: error.localizedDescription)
+        errorMessage = "Search failed: \(error.localizedDescription)"
+    }
+
+    private func finishSearchTask(request: UUID) {
+        guard request == searchID else { return }
+        searchTask = nil
+        if searchRefreshPending {
+            searchRefreshPending = false
+            refreshSearch()
         }
     }
 }

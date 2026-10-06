@@ -16,6 +16,12 @@ struct ManualIndexRecord: Sendable {
     let diagnostic: String
 }
 
+struct TimedManualMatches: Sendable {
+    let ids: Set<String>
+    let startedUptime: Double
+    let finishedUptime: Double
+}
+
 struct ManualIndexError: LocalizedError, Sendable {
     let path: String
     let extendedCode: Int32
@@ -128,6 +134,13 @@ actor ManualSearchIndex {
         }
     }
 
+    /// Actor-entry and completion boundaries separate index work from actor scheduling delay.
+    func measuredMatchingIDs(query: String) throws -> TimedManualMatches {
+        let started = ProcessInfo.processInfo.systemUptime
+        let ids = try matchingIDs(query: query)
+        return TimedManualMatches(ids: ids, startedUptime: started, finishedUptime: ProcessInfo.processInfo.systemUptime)
+    }
+
     func matchingIDs(query: String) throws -> Set<String> {
         try Task.checkCancellation()
         let tokens = query.split(whereSeparator: \.isWhitespace).map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
@@ -219,6 +232,8 @@ private func manualIndexError(database: OpaquePointer?, path: String, operation:
 }
 
 private func rollbackManualIndex(database: OpaquePointer, path: String, original: Error) -> Error {
+    // SQLITE_FULL can already roll back a transaction; autocommit is SQLite's authoritative boundary.
+    guard sqlite3_get_autocommit(database) == 0 else { return original }
     do {
         try executeManualIndexSQL(database: database, path: path, sql: "ROLLBACK")
         return original

@@ -4,7 +4,7 @@ import OSLog
 import Darwin
 
 enum InteractionOperation: String, Codable, Sendable {
-    case search, reader, findNext, findPrevious
+    case search, reader, findNext, findPrevious, indexingProgress
 }
 
 enum InteractionOutcome: String, Codable, Sendable {
@@ -12,7 +12,18 @@ enum InteractionOutcome: String, Codable, Sendable {
 }
 
 enum InteractionStartBoundary: String, Codable, Sendable {
-    case controlHandler, binding, readerHandler, findHandler
+    case controlHandler, binding, readerHandler, findHandler, metadataPublication
+}
+
+struct SearchServiceTiming: Codable, Sendable {
+    let executionStartedUptime: Double
+    let fullTextStartedUptime: Double?
+    let fullTextFinishedUptime: Double?
+    let rankingQueuedUptime: Double
+    let rankingStartedUptime: Double
+    let rankingFinishedUptime: Double
+    let resultsPublicationStartedUptime: Double?
+    let resultsCommittedUptime: Double
 }
 
 struct InteractionSpan: Codable, Sendable {
@@ -35,6 +46,8 @@ struct InteractionSpan: Codable, Sendable {
     var outcome: InteractionOutcome?
     var resultCount: Int?
     var detail: String?
+    var searchTiming: SearchServiceTiming?
+    var coalescedSearchRefreshes: Int?
 }
 
 struct InteractionDiagnosticRecord: Codable, Sendable {
@@ -221,6 +234,18 @@ final class InteractionDiagnostics {
         shared.activeSearch = span
     }
 
+    static func searchRefreshQueued() {
+        guard isEnabled, var span = shared.activeSearch else { return }
+        span.coalescedSearchRefreshes = (span.coalescedSearchRefreshes ?? 0) + 1
+        shared.activeSearch = span
+    }
+
+    static func searchMeasured(generation: UUID, timing: SearchServiceTiming) {
+        guard isEnabled, var span = shared.activeSearch, span.generation == generation else { return }
+        span.searchTiming = timing
+        shared.activeSearch = span
+    }
+
     static func searchFinished(generation: UUID, resultCount: Int?, outcome: InteractionOutcome, detail: String?) {
         guard isEnabled, let span = shared.activeSearch, span.generation == generation else { return }
         shared.activeSearch = nil
@@ -231,6 +256,16 @@ final class InteractionDiagnostics {
     static func searchSuperseded(generation: UUID) {
         guard isEnabled, let span = shared.activeSearch, span.generation == generation else { return }
         shared.supersedeSearch()
+    }
+
+    static func progressStarted(generation: UUID) {
+        started(operation: .indexingProgress, generation: generation, query: "", documentID: nil)
+    }
+
+    static func progressFinished(generation: UUID, indexedCount: Int) {
+        guard isEnabled, let span = shared.active[.indexingProgress], span.generation == generation else { return }
+        shared.active.removeValue(forKey: .indexingProgress)
+        shared.finish(span, outcome: .completed, resultCount: indexedCount, detail: "Committed indexed-manual count publication; excludes pixel presentation.")
     }
 
     static func readerInput(window: NSWindow?) {
@@ -279,7 +314,7 @@ final class InteractionDiagnostics {
             shared.pendingFind = nil
             shared.pendingFindQuery = nil
         }
-        let boundary: InteractionStartBoundary = operation == .reader ? .readerHandler : .findHandler
+        let boundary: InteractionStartBoundary = operation == .indexingProgress ? .metadataPublication : operation == .reader ? .readerHandler : .findHandler
         var span = shared.newSpan(operation: operation, query: query, documentID: documentID,
                                   boundary: boundary, eventUptime: nil)
         if let pending {
