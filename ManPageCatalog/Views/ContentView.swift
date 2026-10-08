@@ -79,10 +79,17 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 if !linkMessage.isEmpty { Text(linkMessage).font(.caption).padding(8).accessibilityIdentifier("referenceStatus") }
                 VStack(spacing: 0) {
-                    ManualDetailView(reader: reader).frame(minHeight: 220, maxHeight: .infinity)
                     if terminal.expanded {
-                        Divider()
-                        TerminalPane(session: terminal).frame(height: terminal.view == nil ? 320 : 460)
+                        if terminal.maximized {
+                            TerminalPane(session: terminal)
+                        } else {
+                            VSplitView {
+                                ManualDetailView(reader: reader).frame(minHeight: 180, idealHeight: 300, maxHeight: .infinity)
+                                TerminalPane(session: terminal).frame(minHeight: 320, idealHeight: 520, maxHeight: .infinity)
+                            }
+                        }
+                    } else {
+                        ManualDetailView(reader: reader).frame(minHeight: 220, maxHeight: .infinity)
                     }
                 }
             }
@@ -106,7 +113,7 @@ struct ContentView: View {
             }
             ToolbarItem {
                 Button { terminal.expanded.toggle() } label: {
-                    Label(terminal.active ? "Terminal • Running" : "Commands", systemImage: "terminal")
+                    Label(terminal.active ? "Terminal • Running" : "Terminal", systemImage: "terminal").labelStyle(.titleAndIcon)
                 }.accessibilityIdentifier("toggleTerminalPane").keyboardShortcut("j", modifiers: .command)
             }
             ToolbarItem {
@@ -118,6 +125,10 @@ struct ContentView: View {
             HStack {
                 Text(library.errorMessage ?? library.status).lineLimit(2).textSelection(.enabled).accessibilityIdentifier("libraryStatus").accessibilityValue(library.errorMessage ?? library.status)
                 Spacer()
+                if terminal.active {
+                    Button("Show Running Terminal") { terminal.expanded = true }
+                        .accessibilityIdentifier("showRunningTerminal")
+                }
                 if library.isIndexing { Button(library.phase == .discovering ? "Pause Scan" : "Pause Indexing") { library.stop() }.accessibilityIdentifier("stopIndexing") }
             }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 6).background(.bar)
         }

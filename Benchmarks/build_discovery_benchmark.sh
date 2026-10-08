@@ -17,6 +17,7 @@ mkdir -p "${1:A:h}"
     "$project_directory/ManPageCatalog/Library/ManualPage.swift" \
     "$project_directory/ManPageCatalog/Library/ManualSearchIndex.swift" \
     "$project_directory/ManPageCatalog/Library/ScanPerformance.swift" \
+    "$project_directory/ManPageCatalog/Terminal/CommandExecutable.swift" \
     "$project_directory/ManPageCatalog/Store/ManualCatalog.swift" \
     "$project_directory/ManPageCatalog/Store/ManualProcess.swift" \
     "$project_directory/ManPageCatalog/Store/CatalogStore.swift" \

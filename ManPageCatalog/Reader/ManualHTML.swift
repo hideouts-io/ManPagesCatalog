@@ -26,10 +26,6 @@ func manualHTML(source: URL) async throws -> String {
     """
 }
 
-func quotedShellWord(_ word: String) -> String {
-    "'" + word.replacingOccurrences(of: "'", with: "'\\''") + "'"
-}
-
 func escapedHTML(_ text: String) -> String {
     text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
         .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")

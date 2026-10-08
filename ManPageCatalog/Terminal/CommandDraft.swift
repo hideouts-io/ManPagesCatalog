@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 struct DraftSource: Equatable {
     let title: String
@@ -32,6 +33,21 @@ struct CommandDraft: Equatable {
 struct TerminalSessionError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
+}
+
+/// Copies reviewable text and opens Terminal.app; never inserts or executes shell input.
+@MainActor
+func copyCommandAndOpenSystemTerminal(text: String, completion: @escaping @MainActor (Error?) -> Void) throws {
+    guard let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else {
+        throw TerminalSessionError(message: "Terminal.app could not be located. Use Copy Command and paste into your terminal application.")
+    }
+    NSPasteboard.general.clearContents()
+    guard NSPasteboard.general.setString(text, forType: .string) else {
+        throw TerminalSessionError(message: "The clipboard did not accept the command. Try Copy Command again.")
+    }
+    NSWorkspace.shared.openApplication(at: terminal, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+        Task { @MainActor in completion(error) }
+    }
 }
 
 /// Snapshot only processes in this PTY's session; never signal unrelated user terminals.

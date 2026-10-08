@@ -174,13 +174,7 @@ func renderManual(source: URL, destination: URL) async throws {
 }
 
 func executablePath(name: String, section: String, environment: [String: String]) -> String {
-    guard ["1", "1m", "1ssl", "1tcl", "8"].contains(section) else { return "" }
-    let path = environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
-    for directory in path.split(separator: ":") {
-        let url = URL(fileURLWithPath: String(directory)).appendingPathComponent(name)
-        if FileManager.default.isExecutableFile(atPath: url.path) { return url.path }
-    }
-    return ""
+    resolveCommandExecutable(name: name, section: section, environment: environment).path ?? ""
 }
 
 func writeCatalog(entries: [CatalogEntry], directory: URL) throws {

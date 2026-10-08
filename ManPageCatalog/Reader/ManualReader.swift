@@ -323,22 +323,20 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
 
     func copyCommandAndOpenTerminal() {
         guard let page else { return }
-        guard let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else {
-            errorMessage = "Terminal.app could not be located. Use Copy Command instead."
+        let command: String
+        do {
+            let target = resolveCommandExecutable(name: page.name, section: page.section, environment: ProcessInfo.processInfo.environment)
+            command = try generatedCommandText(target: target)
+        } catch {
+            message = "Cannot prepare a runnable command: \(error.localizedDescription) Use Build Command to locate the executable."
             return
         }
-        NSPasteboard.general.clearContents()
-        guard NSPasteboard.general.setString(quotedShellWord(page.name), forType: .string) else {
-            message = "Cannot open Terminal: the clipboard did not accept the command."
-            return
-        }
-        let configuration = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.openApplication(at: terminal, configuration: configuration) { _, error in
-            Task { @MainActor in
-                if let error { self.errorMessage = "Cannot open Terminal: \(error.localizedDescription)" }
-                else { self.message = "Command copied. Paste into Terminal when ready. Nothing was inserted or executed." }
+        do {
+            try copyCommandAndOpenSystemTerminal(text: command) { [weak self] error in
+                if let error { self?.message = "Cannot open Terminal: \(error.localizedDescription) The command remains on the clipboard." }
+                else { self?.message = "Command copied. Paste into Terminal when ready. Nothing was inserted or executed." }
             }
-        }
+        } catch { message = error.localizedDescription }
     }
 
     func exportPDF() {
