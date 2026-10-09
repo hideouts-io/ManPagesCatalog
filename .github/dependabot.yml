@@ -8,3 +8,11 @@ updates:
       actions:
         patterns: ["*"]
     open-pull-requests-limit: 5
+  - package-ecosystem: swift
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      swift:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
