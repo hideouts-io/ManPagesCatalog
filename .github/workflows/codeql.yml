@@ -29,17 +29,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Install required Metal toolchain
-        run: xcodebuild -downloadComponent MetalToolchain
+      - name: Install and resolve required Metal toolchain
+        id: metal
+        run: |
+          xcodebuild -downloadComponent MetalToolchain
+          xcodebuild -showComponent MetalToolchain -json > "$RUNNER_TEMP/metal-toolchain.json"
+          identifier=$(jq -er 'select(.status == "installed") | .toolchainIdentifier | select(type == "string" and test("^com\\.apple\\.dt\\.toolchain\\.Metal\\.[A-Za-z0-9.]+$"))' "$RUNNER_TEMP/metal-toolchain.json")
+          search_path=$(jq -er 'select(.status == "installed") | .toolchainSearchPath | select(type == "string" and test("^/private/var/run/com\\.apple\\.security\\.cryptexd/mnt/[-A-Za-z0-9._]+$"))' "$RUNNER_TEMP/metal-toolchain.json")
+          test -x "$search_path/Metal.xctoolchain/usr/bin/metal"
+          "$search_path/Metal.xctoolchain/usr/bin/metal" -v
+          printf 'identifier=%s\nsearch-path=%s\n' "$identifier" "$search_path" >> "$GITHUB_OUTPUT"
       - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           languages: swift
           build-mode: manual
       - name: Build native application
+        # Resolve Metal before CodeQL tracing changes toolchain discovery (codeql-action#3978).
+        env:
+          EXTERNAL_TOOLCHAINS_DIR: ${{ steps.metal.outputs.search-path }}
+          METAL_TOOLCHAIN_IDENTIFIER: ${{ steps.metal.outputs.identifier }}
         run: >-
           xcodebuild build -project ManPageCatalog.xcodeproj -scheme ManPageCatalog
           -configuration Debug -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/codeql-build"
-          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_ALLOWED=NO TOOLCHAINS="$METAL_TOOLCHAIN_IDENTIFIER com.apple.dt.toolchain.XcodeDefault"
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           upload: never
