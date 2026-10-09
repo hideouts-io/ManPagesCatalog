@@ -51,7 +51,7 @@ jobs:
         run: >-
           xcodebuild build -project ManPageCatalog.xcodeproj -scheme ManPageCatalog
           -configuration Debug -destination 'platform=macOS,arch=x86_64' -derivedDataPath "$RUNNER_TEMP/codeql-build"
-          ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO
+          ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO SWIFT_COMPILATION_MODE=wholemodule
           COMPILATION_CACHE_ENABLE_CACHING=NO SWIFT_ENABLE_COMPILE_CACHE=NO SWIFT_USE_INTEGRATED_DRIVER=NO
           CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO TOOLCHAINS="$METAL_TOOLCHAIN_IDENTIFIER com.apple.dt.toolchain.XcodeDefault"
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
