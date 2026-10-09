@@ -19,7 +19,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      security-events: write
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
     steps:
@@ -39,7 +38,16 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
+          upload: false
+          output: ${{ runner.temp }}/codeql-sarif
           category: /language:swift
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: codeql-swift
+          path: ${{ runner.temp }}/codeql-sarif
+          if-no-files-found: error
+          retention-days: 1
 
   supported:
     name: Analyze ${{ matrix.language }}
@@ -47,7 +55,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -62,4 +69,59 @@ jobs:
           build-mode: none
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
+          upload: false
+          output: ${{ runner.temp }}/codeql-sarif
           category: /language:${{ matrix.language }}
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: codeql-${{ matrix.language }}
+          path: ${{ runner.temp }}/codeql-sarif
+          if-no-files-found: error
+          retention-days: 1
+
+  upload-swift:
+    name: Upload Swift analysis
+    needs: swift
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Download SARIF artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: codeql-swift
+          path: sarif
+      - name: Upload analysis to code scanning
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          sarif_file: sarif
+          category: /language:swift
+          wait-for-processing: true
+
+  upload-supported:
+    name: Upload ${{ matrix.language }} analysis
+    needs: supported
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, python]
+    steps:
+      - name: Download SARIF artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: codeql-${{ matrix.language }}
+          path: sarif
+      - name: Upload analysis to code scanning
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        with:
+          sarif_file: sarif
+          category: /language:${{ matrix.language }}
+          wait-for-processing: true

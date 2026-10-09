@@ -7,7 +7,7 @@
 - Commit, push, PR creation, merge, tag, release, deployment, visibility changes, and deletion require authorization covering the operation and target. Honor an existing scoped authorization; do not infer publication from implementation approval.
 - Stage explicit paths or approved hunks, review the complete staged diff, and keep private evidence and secrets out of GitHub.
 - Merge only after applicable checks and conversations are satisfied for the latest candidate revision. Preserve required checks and prefer merge commits over rebase or squash when compatible with repository rules.
-- Pin external Actions to upstream-verified full commit SHAs. Keep PR jobs read-only except the scoped code-scanning upload permission; publishing jobs require the protected github-release environment.
+- Pin external Actions to upstream-verified full commit SHAs. Run PR code with read-only tokens. Give security-events write only to separate upload jobs that execute pinned Actions without repository scripts; publishing jobs require the protected github-release environment.
 
 ## Repository workflow
 
