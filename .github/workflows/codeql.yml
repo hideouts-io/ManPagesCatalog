@@ -52,9 +52,6 @@ jobs:
           EXTERNAL_TOOLCHAINS_DIR: ${{ steps.metal.outputs.search-path }}
           METAL_TOOLCHAIN_IDENTIFIER: ${{ steps.metal.outputs.identifier }}
         run: |
-          xcrun swiftc -swift-version 6 -module-name SwiftExtractionSummary \
-            -target x86_64-apple-macos13.0 -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
-            .github/scripts/report-swift-extraction.swift -o "$RUNNER_TEMP/report-swift-extraction"
           xcodebuild build -project ManPageCatalog.xcodeproj -scheme ManPageCatalog \
             -configuration Debug -destination 'platform=macOS,arch=x86_64' -derivedDataPath "$RUNNER_TEMP/codeql-build" \
             ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO SWIFT_COMPILATION_MODE=wholemodule \
@@ -92,17 +89,6 @@ jobs:
             exit 1
           fi
           printf 'Swift extraction compiler diagnostics: 0\n'
-      - name: Summarize bounded Swift invocation diagnostics
-        if: success() || failure()
-        run: '"$RUNNER_TEMP/report-swift-extraction" "$RUNNER_TEMP" "$RUNNER_TEMP/swift-invocation-summary.json"'
-      - name: Retain bounded Swift context after failure
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: swift-invocation-context
-          path: ${{ runner.temp }}/swift-invocation-summary.json
-          if-no-files-found: error
-          retention-days: 1
       - name: Upload SARIF artifact
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
