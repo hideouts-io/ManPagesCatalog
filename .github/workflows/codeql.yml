@@ -42,7 +42,8 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
-          upload: false
+          upload: never
+          upload-database: false
           output: ${{ runner.temp }}/codeql-sarif
           category: /language:swift
       - name: Upload SARIF artifact
@@ -73,7 +74,8 @@ jobs:
           build-mode: none
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
-          upload: false
+          upload: never
+          upload-database: false
           output: ${{ runner.temp }}/codeql-sarif
           category: /language:${{ matrix.language }}
       - name: Upload SARIF artifact
