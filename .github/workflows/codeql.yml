@@ -50,8 +50,8 @@ jobs:
           METAL_TOOLCHAIN_IDENTIFIER: ${{ steps.metal.outputs.identifier }}
         run: >-
           xcodebuild build -project ManPageCatalog.xcodeproj -scheme ManPageCatalog
-          -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath "$RUNNER_TEMP/codeql-build"
-          ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO
+          -configuration Debug -destination 'platform=macOS,arch=x86_64' -derivedDataPath "$RUNNER_TEMP/codeql-build"
+          ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO
           CODE_SIGNING_ALLOWED=NO TOOLCHAINS="$METAL_TOOLCHAIN_IDENTIFIER com.apple.dt.toolchain.XcodeDefault"
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
