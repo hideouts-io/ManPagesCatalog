@@ -77,7 +77,7 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         window.contentView = reader.webView
         let context = BrowseContext(query: "launchctl", section: nil, root: nil, fullText: false)
         await reader.open(page: launchctl, context: context)
-        try await waitForReader(reader)
+        try await waitForReader(reader, expectedPage: launchctl)
         XCTAssertTrue(reader.headings.contains { $0.title == "SUBCOMMANDS" })
         reader.findQuery = "bootstrap"
         reader.findNext()
@@ -85,8 +85,9 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         XCTAssertEqual(reader.findStatus, "Match found")
         reader.findPrevious()
         reader.webView.pageZoom = 1.2
-        _ = try await reader.webView.evaluateJavaScript("window.scrollTo(0,600); window.testDocumentIdentity='retained'; const range=document.createRange(); range.selectNodeContents(document.querySelector('h2')); window.getSelection().removeAllRanges(); window.getSelection().addRange(range);")
+        _ = try await reader.webView.evaluateJavaScript("window.scrollTo(0,600); window.testDocumentIdentity='retained'; const range=document.createRange(); range.selectNodeContents(document.getElementById('NAME')); window.getSelection().removeAllRanges(); window.getSelection().addRange(range);")
         let selection = try await reader.webView.evaluateJavaScript("window.getSelection().toString()") as? String
+        XCTAssertEqual(selection, "NAME")
         await reader.open(page: launchctl, context: BrowseContext(query: "network", section: "8", root: nil, fullText: false))
         let identity = try await reader.webView.evaluateJavaScript("window.testDocumentIdentity") as? String
         XCTAssertEqual(identity, "retained")
@@ -97,10 +98,10 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         let beforeValue = try await reader.webView.evaluateJavaScript("window.scrollY") as? Double
         let before = try XCTUnwrap(beforeValue)
         await reader.open(page: ping, context: BrowseContext(query: "ping", section: "8", root: nil, fullText: false))
-        try await waitForReader(reader)
+        try await waitForReader(reader, expectedPage: ping)
         XCTAssertEqual(reader.page?.name, "ping")
         let restored = await reader.back()
-        try await waitForReader(reader)
+        try await waitForReader(reader, expectedPage: launchctl)
         XCTAssertEqual(restored, context)
         XCTAssertEqual(reader.page?.name, "launchctl")
         XCTAssertEqual(reader.webView.pageZoom, 1.2)
@@ -158,9 +159,25 @@ final class NativeBrowserIntegrationTests: XCTestCase {
     }
 
     @MainActor
-    private func waitForReader(_ reader: ManualReader) async throws {
-        for _ in 0..<500 where reader.loading { try await Task.sleep(nanoseconds: 20_000_000) }
-        XCTAssertFalse(reader.loading, "Reader did not finish within ten seconds")
-        XCTAssertNil(reader.errorMessage)
+    private func waitForReader(_ reader: ManualReader, expectedPage: ManualPage) async throws {
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            if let message = reader.errorMessage { throw ManualToolError(message: message) }
+            if !reader.loading && !reader.webView.isLoading {
+                let value = try await reader.webView.callAsyncJavaScript(
+                    "return document.readyState === 'complete' && document.getElementById('NAME') !== null && document.querySelector('.head-ltitle')?.textContent.trim().toLowerCase() === expectedTitle.toLowerCase();",
+                    arguments: ["expectedTitle": expectedPage.title], in: nil, contentWorld: .page) as? Bool
+                let ready = try XCTUnwrap(value, "WebKit returned an invalid document-readiness result")
+                if ready {
+                    XCTAssertEqual(reader.page?.id, expectedPage.id)
+                    XCTAssertEqual(reader.webView.url?.absoluteString, "about:blank")
+                    XCTAssertFalse(reader.loading)
+                    XCTAssertNil(reader.errorMessage)
+                    return
+                }
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        throw ManualToolError(message: "Reader did not load \(expectedPage.title) with its NAME heading within ten seconds.")
     }
 }
