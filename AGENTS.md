@@ -1,7 +1,7 @@
 # Repository workflow
 
 - Use the checked-in ManPageCatalog.xcodeproj; regenerate it only when project.yml changes. When reviewing an Xcode Swift dependency PR, synchronize the authoritative project.yml version constraint with its reviewed project.pbxproj and Package.resolved update, then regenerate and verify through the established workflow before accepting it.
-- Native CI runs xcodebuild test -project ManPageCatalog.xcodeproj -scheme ManPageCatalog -destination 'platform=macOS' CODE_SIGN_IDENTITY="-". Preserve that integration gate and the required Metal toolchain installation. CodeQL resolves the installed Metal component before initialization and gives Xcode its explicit external toolchain path and identifier while retaining the default Swift toolchain.
+- Native CI runs xcodebuild test -project ManPageCatalog.xcodeproj -scheme ManPageCatalog -destination 'platform=macOS' CODE_SIGN_IDENTITY="-". Preserve that integration gate and the required Metal toolchain installation. CodeQL uses Xcode 16.4 on macOS 15 with its bundled Metal compiler and linker; verify their exact selected-toolchain paths before initialization and retain the real shader compilation.
 - Keep manual .github/workflows/release.yml builds limited to release artifacts. Release publication is a separate authorized operation.
 - Follow README.md for isolated extracted-app verification. Keep private catalogs, checkpoints, and terminal output out of public artifacts.
 - Require successful native Swift analysis at the candidate revision; preserve the separate Python and Actions scans.
