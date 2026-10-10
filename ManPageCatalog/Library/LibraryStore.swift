@@ -151,17 +151,17 @@ final class LibraryStore: ObservableObject {
 
     func scan() {
         startScan(checkpoint: {
-            newDiscoveryCheckpoint(plan: try await standardDiscoveryPlan(environment: ProcessInfo.processInfo.environment, additional: self.additionalRoots), title: "Standard Scan")
+            try newDiscoveryCheckpoint(plan: await standardDiscoveryPlan(environment: ProcessInfo.processInfo.environment, additional: self.additionalRoots), title: "Standard Scan")
         })
     }
 
     func deepScan() {
-        startScan(checkpoint: { newDiscoveryCheckpoint(plan: try deepDiscoveryPlan(additional: self.additionalRoots), title: "Deep Scan") })
+        startScan(checkpoint: { try newDiscoveryCheckpoint(plan: deepDiscoveryPlan(additional: self.additionalRoots), title: "Deep Scan") })
     }
 
     func scanSelectedRoots() {
         startScan(checkpoint: {
-            newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: self.additionalRoots.map { URL(fileURLWithPath: $0) }, allowedNetworkRoots: self.additionalRoots.map { URL(fileURLWithPath: $0) }, exclusions: []), title: "Selected Folders")
+            try newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: self.additionalRoots.map { URL(fileURLWithPath: $0) }, allowedNetworkRoots: self.additionalRoots.map { URL(fileURLWithPath: $0) }, exclusions: []), title: "Selected Folders")
         })
     }
 

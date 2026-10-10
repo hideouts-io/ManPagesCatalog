@@ -2,6 +2,7 @@ import XCTest
 import PDFKit
 import Combine
 import Darwin
+import SwiftUI
 @testable import Man_Page_Catalog
 
 final class DiscoveryIntegrationTests: XCTestCase {
@@ -103,6 +104,302 @@ final class DiscoveryIntegrationTests: XCTestCase {
         let result = try await worker.value
         XCTAssertTrue(result.cancelled)
         XCTAssertFalse(try XCTUnwrap(result.coverage.first).completed)
+    }
+
+    func testExcludedMeasurementOutputAliasesAndDurableResume() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryOutput-\(UUID().uuidString)")
+        let output = directory.appendingPathComponent("measurement")
+        let ordinary = directory.appendingPathComponent("manuals")
+        let neighbor = directory.appendingPathComponent("measurement-other")
+        for folder in [output, ordinary, neighbor] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove excluded-output integration files: \(error)") }
+        }
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"), to: ordinary.appendingPathComponent("launchctl.1"))
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/ls.1"), to: neighbor.appendingPathComponent("ls.1"))
+        let excludedManual = output.appendingPathComponent("du.1")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/du.1"), to: excludedManual)
+        let directoryAlias = directory.appendingPathComponent("output-alias")
+        let fileAlias = directory.appendingPathComponent("output-file.1")
+        let manualAlias = directory.appendingPathComponent("output-manual.1")
+        try FileManager.default.createSymbolicLink(at: directoryAlias, withDestinationURL: output)
+        try FileManager.default.createSymbolicLink(at: fileAlias, withDestinationURL: excludedManual)
+        try ".so \(excludedManual.path)\n".write(to: manualAlias, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: directory.appendingPathComponent("loop"), withDestinationURL: directory)
+        let excludedPath = output.resolvingSymlinksInPath().path
+        let plan = DiscoveryPlan(roots: [directory], allowedNetworkRoots: [], exclusions: [], traversalExclusions: [
+            DiscoveryIssue(path: excludedPath, kind: .excluded, reason: "Owned measurement output.")
+        ])
+        let checkpointURL = output.appendingPathComponent("checkpoint.json")
+        let file = DiscoveryCheckpointFile(url: checkpointURL)
+        let request = UUID()
+        await file.activate(request)
+        let initial = try newDiscoveryCheckpoint(plan: plan, title: "Output exclusion integration")
+        let worker = Task.detached {
+            try await continueDiscovery(checkpoint: initial, previous: [], progress: { value in
+                if value.files > 0 { withUnsafeCurrentTask { $0?.cancel() } }
+            }, save: { try await file.save($0, request: request) })
+        }
+        let paused = try await worker.value
+        XCTAssertTrue(paused.cancelled)
+        let loaded = try await DiscoveryCheckpointFile(url: checkpointURL).load()
+        let reopened = try XCTUnwrap(loaded)
+        XCTAssertEqual(reopened.plan.traversalExclusions?.map(\.path), [excludedPath])
+        let resumed = try await continueDiscovery(checkpoint: reopened, previous: paused.pages, progress: { _ in },
+            save: { try await file.save($0, request: request) })
+        let fresh = try await discoverLibrary(plan: plan, previous: [], progress: { _ in })
+        XCTAssertFalse(resumed.cancelled)
+        XCTAssertEqual(resumed.coverage.reduce(0) { $0 + $1.files }, 3)
+        XCTAssertEqual(resumed.coverage.reduce(0) { $0 + $1.directories }, 3)
+        XCTAssertEqual(Set(resumed.pages.map(\.id)), Set(fresh.pages.map(\.id)))
+        XCTAssertEqual(Set(resumed.pages.flatMap(\.locations)), Set(fresh.pages.flatMap(\.locations)))
+        XCTAssertEqual(Set(resumed.pages.map(\.name)), ["launchctl", "ls"])
+        let issues = resumed.coverage.flatMap(\.issues)
+        for path in [output.path, directoryAlias.path, fileAlias.path, manualAlias.path] {
+            XCTAssertTrue(issues.contains { $0.path == path && $0.kind == .excluded && $0.reason.contains("Owned measurement output") }, path)
+        }
+        XCTAssertTrue(issues.contains { $0.path == directory.appendingPathComponent("loop").path && $0.kind == .excluded })
+        XCTAssertFalse(issues.contains { $0.kind == .pending || $0.kind == .failed })
+        let exported = output.appendingPathComponent("coverage.json")
+        try JSONEncoder().encode(resumed.coverage).write(to: exported, options: .atomic)
+        let coverage = try JSONDecoder().decode([SourceCoverage].self, from: Data(contentsOf: exported))
+        XCTAssertEqual(coverage.flatMap(\.issues), issues)
+    }
+
+    func testExplicitChildSelectionSurvivesInformationalParentGap() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoverySelected-\(UUID().uuidString)")
+        let selected = directory.appendingPathComponent("selected-manuals")
+        try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove selected-child integration files: \(error)") }
+        }
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/ls.1"), to: selected.appendingPathComponent("ls.1"))
+        let plan = DiscoveryPlan(roots: [selected], allowedNetworkRoots: [selected], exclusions: [
+            DiscoveryIssue(path: directory.path, kind: .excluded, reason: "Parent volume outside explicitly selected child folders.")
+        ])
+        let scan = try await discoverLibrary(plan: plan, previous: [], progress: { _ in })
+        XCTAssertFalse(scan.cancelled)
+        XCTAssertEqual(scan.pages.map(\.name), ["ls"])
+        XCTAssertEqual(scan.coverage.first?.files, 1)
+        XCTAssertTrue(try XCTUnwrap(scan.coverage.first).issues.isEmpty)
+        XCTAssertTrue(scan.coverage.flatMap(\.issues).contains { $0.path == directory.path && $0.kind == .excluded })
+    }
+
+    @MainActor
+    func testDirectoryAliasesLinkCoverageAcrossPauseAndLegacyResume() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DirectoryAliases-\(UUID().uuidString)")
+        let corpus = directory.appendingPathComponent("corpus")
+        let canonical = corpus.appendingPathComponent("canonical")
+        let section = canonical.appendingPathComponent("man1")
+        let alias = corpus.appendingPathComponent("alternate-man")
+        let secondAlias = corpus.appendingPathComponent("second-man")
+        let cycle = canonical.appendingPathComponent("ancestor-cycle")
+        let library = directory.appendingPathComponent("library")
+        try FileManager.default.createDirectory(at: section, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove directory-alias integration files: \(error)") }
+        }
+        for name in ["ls", "du"] {
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/\(name).1"), to: section.appendingPathComponent("\(name).1"))
+        }
+        for target in [alias, secondAlias] { try FileManager.default.createSymbolicLink(at: target, withDestinationURL: canonical) }
+        try FileManager.default.createSymbolicLink(at: cycle, withDestinationURL: canonical)
+        let plan = DiscoveryPlan(roots: [canonical, alias, corpus], allowedNetworkRoots: [], exclusions: [])
+        let checkpointURL = library.appendingPathComponent("checkpoint.json")
+        let checkpointFile = DiscoveryCheckpointFile(url: checkpointURL)
+        let request = UUID()
+        await checkpointFile.activate(request)
+        let worker = Task.detached {
+            try await continueDiscovery(checkpoint: newDiscoveryCheckpoint(plan: plan, title: "Directory alias integration"), previous: [],
+                progress: { value in if value.files > 0 { withUnsafeCurrentTask { $0?.cancel() } } },
+                save: { try await checkpointFile.save($0, request: request) })
+        }
+        let paused = try await worker.value
+        XCTAssertTrue(paused.cancelled)
+        let saved = try await checkpointFile.load()
+        let reopened = try XCTUnwrap(saved)
+        XCTAssertEqual(reopened.visitedRootIndices?.count, reopened.visited.count)
+        let resumed = try await continueDiscovery(checkpoint: reopened, previous: paused.pages, progress: { _ in },
+            save: { try await checkpointFile.save($0, request: request) })
+        let fresh = try await discoverLibrary(plan: plan, previous: [], progress: { _ in })
+        XCTAssertFalse(resumed.cancelled)
+        XCTAssertEqual(resumed.coverage.reduce(0) { $0 + $1.files }, 2)
+        XCTAssertEqual(resumed.coverage.reduce(0) { $0 + $1.directories }, 3)
+        XCTAssertEqual(Set(resumed.pages.flatMap(\.locations)), Set(fresh.pages.flatMap(\.locations)))
+        XCTAssertEqual(Set(resumed.coverage.flatMap(\.issues)), Set(fresh.coverage.flatMap(\.issues)))
+        let issues = resumed.coverage.flatMap(\.issues)
+        for path in [alias.path, secondAlias.path] {
+            let reference = try XCTUnwrap(issues.first { $0.path == path }?.directoryReference)
+            XCTAssertEqual(reference.directory.path, canonical.path)
+            XCTAssertEqual(reference.root, canonical)
+            XCTAssertEqual(reference.identity, try materializedFileState(canonical).identity)
+        }
+        let finalCheckpoint = try await checkpointFile.load()
+        let completed = try XCTUnwrap(finalCheckpoint)
+        try validateDiscoveryCursors(completed)
+        let inventoryURL = library.appendingPathComponent("inventory.json")
+        try JSONEncoder().encode(resumed).write(to: inventoryURL)
+        XCTAssertEqual(try loadDiscovery(inventoryURL).coverage.flatMap(\.issues), issues)
+        let exportURL = library.appendingPathComponent("coverage.json")
+        try JSONEncoder().encode(resumed.coverage).write(to: exportURL)
+        let exported = try JSONDecoder().decode([SourceCoverage].self, from: Data(contentsOf: exportURL))
+        try validateCoverageDirectoryReferences(exported)
+        XCTAssertEqual(exported.flatMap(\.issues), issues)
+
+        var legacy = reopened
+        legacy.visitedRootIndices = nil
+        legacy.roots = reopened.roots.map { state in
+            var root = state
+            root.issues = state.issues.map { DiscoveryIssue(path: $0.path, kind: $0.kind, reason: $0.reason) }
+            return root
+        }
+        let legacyURL = library.appendingPathComponent("legacy-checkpoint.json")
+        try JSONEncoder().encode(legacy).write(to: legacyURL)
+        let loadedLegacy = try await DiscoveryCheckpointFile(url: legacyURL).load()
+        let legacyReopened = try XCTUnwrap(loadedLegacy)
+        XCTAssertNil(legacyReopened.visitedRootIndices)
+        let legacyResumed = try await continueDiscovery(checkpoint: legacyReopened, previous: paused.pages, progress: { _ in }, save: { _ in })
+        XCTAssertEqual(Set(legacyResumed.pages.flatMap(\.locations)), Set(fresh.pages.flatMap(\.locations)))
+        let historicalReference = try XCTUnwrap(legacyResumed.coverage.flatMap(\.issues).first { $0.path == alias.path }?.directoryReference)
+        XCTAssertEqual(historicalReference.directory.path, canonical.path)
+        XCTAssertNil(historicalReference.root)
+
+        let aliasIssue = try XCTUnwrap(issues.first { $0.path == alias.path })
+        let renderer = ImageRenderer(content: CoverageIssueView(issue: aliasIssue).padding().frame(width: 660, alignment: .leading)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        let image = try XCTUnwrap(renderer.nsImage)
+        let representation = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+        let pixels = try XCTUnwrap(representation.representation(using: .png, properties: [:]))
+        let attachment = XCTAttachment(data: pixels, uniformTypeIdentifier: "public.png")
+        attachment.name = "Rendered directory-alias coverage reference"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        try pixels.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("ManPagesCatalog-directory-alias-render.png"), options: .atomic)
+
+        let changedTarget = corpus.appendingPathComponent("changed-target/man1")
+        try FileManager.default.createDirectory(at: changedTarget, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"), to: changedTarget.appendingPathComponent("launchctl.1"))
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: changedTarget.deletingLastPathComponent())
+        let reconciled = try await discoverLibrary(plan: plan, previous: [], progress: { _ in })
+        let changedLocation = try XCTUnwrap(reconciled.pages.first { $0.name == "launchctl" }?.locations.first { pathContains(root: alias.path, path: $0.source.path) })
+        XCTAssertEqual(changedLocation.root, alias)
+        XCTAssertEqual(reconciled.coverage.reduce(0) { $0 + $1.files }, 3)
+    }
+
+    func testDirectoryAliasRootOwnershipAndMalformedReferences() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AliasOwnership-\(UUID().uuidString)")
+        let corpus = directory.appendingPathComponent("corpus")
+        let nested = corpus.appendingPathComponent("man1")
+        let alias = directory.appendingPathComponent("installed-man-link")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove alias-ownership integration files: \(error)") }
+        }
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/ls.1"), to: nested.appendingPathComponent("ls.1"))
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: URL(fileURLWithPath: "/usr/share/man/man1"))
+        for roots in [[corpus, nested], [nested, corpus]] {
+            let scan = try await scanLibrary(roots: roots)
+            XCTAssertFalse(scan.cancelled)
+            let issue = try XCTUnwrap(scan.coverage.flatMap(\.issues).first { $0.path == nested.path && $0.directoryReference != nil })
+            XCTAssertEqual(issue.directoryReference?.root, roots[0])
+            XCTAssertEqual(scan.coverage.reduce(0) { $0 + $1.files }, 1)
+            XCTAssertEqual(scan.coverage.reduce(0) { $0 + $1.directories }, 2)
+            try validateCoverageDirectoryReferences(scan.coverage)
+        }
+        let scan = try await scanLibrary(roots: [URL(fileURLWithPath: "/usr/share/man/man1"), alias])
+        let reference = try XCTUnwrap(scan.coverage.last?.issues.first?.directoryReference)
+        XCTAssertEqual(reference.directory.path, "/usr/share/man/man1")
+        XCTAssertEqual(reference.root?.path, "/usr/share/man/man1")
+        XCTAssertEqual(scan.coverage.last?.directories, 0)
+        XCTAssertEqual(scan.coverage.last?.files, 0)
+        let invalidReferences: [DiscoveryDirectoryReference] = [
+            DiscoveryDirectoryReference(directory: directory, identity: reference.identity, root: reference.root),
+            DiscoveryDirectoryReference(directory: alias, identity: reference.identity, root: alias),
+            DiscoveryDirectoryReference(directory: directory, identity: reference.identity, root: nil)
+        ]
+        for (index, invalidReference) in invalidReferences.enumerated() {
+            let invalidIssue = DiscoveryIssue(path: alias.path, kind: .excluded, reason: "Invalid imported reference", directoryReference: invalidReference)
+            let invalidCoverage = [scan.coverage[0], SourceCoverage(root: alias, count: 0, directories: 0, files: 0, completed: true, issues: [invalidIssue])]
+            let invalidInventory = directory.appendingPathComponent("invalid-reference-\(index).json")
+            try JSONEncoder().encode(LibraryScan(pages: scan.pages, coverage: invalidCoverage, cancelled: false)).write(to: invalidInventory)
+            XCTAssertThrowsError(try loadDiscovery(invalidInventory))
+        }
+        var checkpoint = try newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: [nested], allowedNetworkRoots: [], exclusions: []), title: "Malformed ownership")
+        let checkpointFile = DiscoveryCheckpointFile(url: directory.appendingPathComponent("completed.json"))
+        let request = UUID()
+        await checkpointFile.activate(request)
+        _ = try await continueDiscovery(checkpoint: checkpoint, previous: [], progress: { _ in }, save: { try await checkpointFile.save($0, request: request) })
+        let saved = try await checkpointFile.load()
+        checkpoint = try XCTUnwrap(saved)
+        let inventoryURL = directory.appendingPathComponent("discovery-v1.json")
+        let inventoryBytes = try JSONEncoder().encode(scan)
+        try inventoryBytes.write(to: inventoryURL, options: .atomic)
+        let planIssue = DiscoveryIssue(path: alias.path, kind: .excluded, reason: "Plan exclusions cannot claim measured aliases", directoryReference: reference)
+        let malformedPlans = [
+            DiscoveryPlan(roots: checkpoint.plan.roots, allowedNetworkRoots: [], exclusions: [planIssue]),
+            DiscoveryPlan(roots: checkpoint.plan.roots, allowedNetworkRoots: [], exclusions: [], traversalExclusions: [planIssue])
+        ]
+        for plan in malformedPlans {
+            let malformed = DiscoveryCheckpoint(version: checkpoint.version, title: checkpoint.title, started: checkpoint.started,
+                bootReference: checkpoint.bootReference, bootReferenceClock: checkpoint.bootReferenceClock, plan: plan,
+                updated: checkpoint.updated, roots: checkpoint.roots, visited: checkpoint.visited,
+                visitedRootIndices: checkpoint.visitedRootIndices, pages: checkpoint.pages, peakPending: checkpoint.peakPending)
+            let malformedBytes = try JSONEncoder().encode(malformed)
+            let checkpointURL = directory.appendingPathComponent("completed.json")
+            try malformedBytes.write(to: checkpointURL, options: .atomic)
+            do {
+                _ = try await checkpointFile.load()
+                XCTFail("A plan exclusion cannot carry a measured directory reference")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("Cannot resume"), error.localizedDescription)
+            }
+            XCTAssertEqual(try Data(contentsOf: checkpointURL), malformedBytes)
+            XCTAssertEqual(try Data(contentsOf: inventoryURL), inventoryBytes)
+        }
+        let identity = try XCTUnwrap(checkpoint.visited.keys.first)
+        checkpoint.visitedRootIndices?[identity] = 1
+        XCTAssertThrowsError(try validateDiscoveryCursors(checkpoint))
+    }
+
+    func testDirectoryAliasOwnershipAfterInaccessibleParent() async throws {
+        guard geteuid() != 0 else { throw XCTSkip("A non-root test host is required to exercise directory access denial.") }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AliasPermission-\(UUID().uuidString)")
+        let parent = directory.appendingPathComponent("parent")
+        let nested = parent.appendingPathComponent("man1")
+        let alias = directory.appendingPathComponent("nested-alias")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/ls.1"), to: nested.appendingPathComponent("ls.1"))
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: nested)
+        defer {
+            do {
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
+                try FileManager.default.removeItem(at: directory)
+            } catch { XCTFail("Cannot restore and remove alias-permission integration files: \(error)") }
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: parent.path)
+        let plan = DiscoveryPlan(roots: [parent, nested, alias], allowedNetworkRoots: [], exclusions: [])
+        let scan = try await discoverLibrary(plan: plan, previous: [], progress: { value in
+            if value.path == parent.path {
+                do { try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path) }
+                catch { XCTFail("Cannot restore test-owned parent access: \(error)") }
+            }
+        })
+        XCTAssertEqual(scan.coverage[0].directories, 0)
+        XCTAssertEqual(scan.coverage[0].issues.first?.kind, .inaccessible)
+        XCTAssertEqual(scan.coverage[1].directories, 1)
+        XCTAssertEqual(scan.coverage[1].files, 1)
+        let reference = try XCTUnwrap(scan.coverage[2].issues.first?.directoryReference)
+        XCTAssertEqual(reference.directory.path, nested.path)
+        XCTAssertEqual(reference.root, nested)
+        try validateCoverageDirectoryReferences(scan.coverage)
     }
 
     @MainActor
@@ -345,7 +642,7 @@ final class DiscoveryIntegrationTests: XCTestCase {
         let file = DiscoveryCheckpointFile(url: url)
         let request = UUID()
         await file.activate(request)
-        let initial = newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: [URL(fileURLWithPath: "/usr/share/man")], allowedNetworkRoots: [], exclusions: []), title: "Integration Scan")
+        let initial = try newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: [URL(fileURLWithPath: "/usr/share/man")], allowedNetworkRoots: [], exclusions: []), title: "Integration Scan")
         let (stream, continuation) = AsyncStream<DiscoveryProgress>.makeStream()
         let worker = Task.detached {
             try await continueDiscovery(checkpoint: initial, previous: [], progress: { value in
@@ -551,6 +848,138 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(retained.pendingCount, 0)
     }
 
+    func testBootClockProvenanceAndMismatchPreserveDurableResume() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryBootClock-\(UUID().uuidString)")
+        let root = try wideDirectory(directory)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove boot-clock integration files: \(error)") }
+        }
+        let checkpointURL = directory.appendingPathComponent("checkpoint.json")
+        let inventoryURL = directory.appendingPathComponent("discovery-v1.json")
+        let (partial, checkpoint) = try await pausedWideDirectory(root, checkpointURL)
+        XCTAssertTrue(partial.cancelled)
+        XCTAssertGreaterThan(checkpoint.pendingCount, 0)
+        XCTAssertEqual(checkpoint.bootReferenceClock, .continuous)
+        let file = DiscoveryCheckpointFile(url: checkpointURL)
+        let request = UUID()
+        await file.activate(request)
+        try await file.saveInventory(partial, request: request)
+        let checkpointBytes = try Data(contentsOf: checkpointURL)
+        let inventoryBytes = try Data(contentsOf: inventoryURL)
+        let references: [(clock: DiscoveryBootReferenceClock?, reference: Date)] = [
+            (.continuous, checkpoint.bootReference),
+            (nil, Date().addingTimeInterval(-ProcessInfo.processInfo.systemUptime))
+        ]
+        for reference in references {
+            let compatible = DiscoveryCheckpoint(version: checkpoint.version, title: checkpoint.title, started: checkpoint.started,
+                bootReference: reference.reference, bootReferenceClock: reference.clock, plan: checkpoint.plan,
+                updated: checkpoint.updated, roots: checkpoint.roots, visited: checkpoint.visited,
+                visitedRootIndices: checkpoint.visitedRootIndices, pages: checkpoint.pages, peakPending: checkpoint.peakPending)
+            try JSONEncoder().encode(compatible).write(to: checkpointURL, options: .atomic)
+            let loaded = try await file.load()
+            XCTAssertEqual(try XCTUnwrap(loaded).bootReferenceClock, reference.clock)
+            let changed = DiscoveryCheckpoint(version: compatible.version, title: compatible.title, started: compatible.started,
+                bootReference: reference.reference.addingTimeInterval(-3600), bootReferenceClock: reference.clock,
+                plan: compatible.plan, updated: compatible.updated, roots: compatible.roots, visited: compatible.visited,
+                visitedRootIndices: compatible.visitedRootIndices, pages: compatible.pages, peakPending: compatible.peakPending)
+            let incompatibleBytes = try JSONEncoder().encode(changed)
+            try incompatibleBytes.write(to: checkpointURL, options: .atomic)
+            do {
+                _ = try await file.load()
+                XCTFail("A mismatched boot reference must refuse resume for both continuous and legacy clocks")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("boot"), error.localizedDescription)
+                XCTAssertTrue(error.localizedDescription.contains("fresh scan"), error.localizedDescription)
+            }
+            XCTAssertEqual(try Data(contentsOf: checkpointURL), incompatibleBytes)
+            XCTAssertEqual(try Data(contentsOf: inventoryURL), inventoryBytes)
+        }
+        let encoded = try XCTUnwrap(String(data: checkpointBytes, encoding: .utf8))
+        let unsupported = encoded.replacingOccurrences(of: "\"bootReferenceClock\":\"continuous\"", with: "\"bootReferenceClock\":\"unsupported\"")
+        XCTAssertNotEqual(unsupported, encoded)
+        let unsupportedBytes = Data(unsupported.utf8)
+        try unsupportedBytes.write(to: checkpointURL, options: .atomic)
+        do {
+            _ = try await file.load()
+            XCTFail("An unsupported boot clock must not be interpreted as a continuous or legacy clock")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Cannot resume"), error.localizedDescription)
+        }
+        XCTAssertEqual(try Data(contentsOf: checkpointURL), unsupportedBytes)
+        XCTAssertEqual(try Data(contentsOf: inventoryURL), inventoryBytes)
+        try checkpointBytes.write(to: checkpointURL, options: .atomic)
+        let reopened = try await file.load()
+        let resumed = try await continueDiscovery(checkpoint: try XCTUnwrap(reopened), previous: partial.pages,
+            progress: { _ in }, save: { try await file.save($0, request: request) })
+        let fresh = try await scanLibrary(roots: [root])
+        XCTAssertFalse(resumed.cancelled)
+        XCTAssertEqual(Set(resumed.pages.flatMap(\.locations)), Set(fresh.pages.flatMap(\.locations)))
+        XCTAssertEqual(resumed.coverage.first?.files, fresh.coverage.first?.files)
+        XCTAssertEqual(try Data(contentsOf: inventoryURL), inventoryBytes)
+    }
+
+    func testReplacedRootRejectsDurableResumeAndFreshScanReconcilesContent() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryRootReplacement-\(UUID().uuidString)")
+        let root = try wideDirectory(directory)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove root-replacement integration files: \(error)") }
+        }
+        let prior = try await scanLibrary(roots: [root])
+        let priorManual = try XCTUnwrap(prior.pages.first)
+        XCTAssertEqual(priorManual.name, "launchctl")
+        let checkpointURL = directory.appendingPathComponent("checkpoint.json")
+        let inventoryURL = directory.appendingPathComponent("discovery-v1.json")
+        let (partial, checkpoint) = try await pausedWideDirectory(root, checkpointURL)
+        XCTAssertTrue(partial.cancelled)
+        XCTAssertGreaterThan(checkpoint.pendingCount, 0)
+        let retained = LibraryScan(pages: mergingDiscovery(previous: prior.pages, scan: partial), coverage: partial.coverage, cancelled: true)
+        try JSONEncoder().encode(retained).write(to: inventoryURL, options: .atomic)
+        let checkpointBytes = try Data(contentsOf: checkpointURL)
+        let inventoryBytes = try Data(contentsOf: inventoryURL)
+        let oldIdentity = try materializedFileState(root).identity
+        let moved = directory.appendingPathComponent("original-root")
+        try FileManager.default.moveItem(at: root, to: moved)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/ls.1"), to: root.appendingPathComponent("ls.1"))
+        XCTAssertEqual(try materializedFileState(moved).identity, oldIdentity)
+        XCTAssertNotEqual(try materializedFileState(root).identity, oldIdentity)
+
+        let file = DiscoveryCheckpointFile(url: checkpointURL)
+        let loaded = try await file.load()
+        let reopened = try XCTUnwrap(loaded)
+        let request = UUID()
+        await file.activate(request)
+        do {
+            _ = try await continueDiscovery(checkpoint: reopened, previous: retained.pages, progress: { _ in },
+                                            save: { try await file.save($0, request: request) })
+            XCTFail("A different root at the saved path must not reuse the original directory cursor")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains(root.path), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.lowercased().contains("fresh scan"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.lowercased().contains("identity"), error.localizedDescription)
+        }
+        XCTAssertEqual(try Data(contentsOf: checkpointURL), checkpointBytes)
+        XCTAssertEqual(try Data(contentsOf: inventoryURL), inventoryBytes)
+        let reopenedInventory = try loadDiscovery(inventoryURL)
+        XCTAssertEqual(Set(reopenedInventory.pages.map(\.id)), Set(retained.pages.map(\.id)))
+        XCTAssertEqual(reopenedInventory.coverage.first?.files, retained.coverage.first?.files)
+        XCTAssertEqual(rankedManuals(pages: reopenedInventory.pages, query: "launchctl", section: nil, root: nil, fullText: []).first?.page.id, priorManual.id)
+
+        let fresh = try await discoverLibrary(plan: reopened.plan, previous: reopenedInventory.pages, progress: { _ in })
+        XCTAssertFalse(fresh.cancelled)
+        XCTAssertEqual(fresh.coverage.first?.files, 1)
+        XCTAssertEqual(fresh.coverage.first?.directories, 1)
+        XCTAssertTrue(try XCTUnwrap(fresh.coverage.first).completed)
+        XCTAssertTrue(try XCTUnwrap(fresh.coverage.first).issues.isEmpty)
+        XCTAssertEqual(fresh.pages.map(\.name), ["ls"])
+        XCTAssertEqual(mergingDiscovery(previous: reopenedInventory.pages, scan: fresh).map(\.name), ["ls"])
+        XCTAssertNotEqual(fresh.pages.first?.id, priorManual.id)
+        XCTAssertEqual(try Data(contentsOf: checkpointURL), checkpointBytes, "An independent fresh scan does not replace the retained checkpoint")
+        XCTAssertEqual(try Data(contentsOf: inventoryURL), inventoryBytes)
+    }
+
     func testIncrementalCoverageKeepsFormatterDiagnosticsSeparate() async throws {
         let source = URL(fileURLWithPath: "/usr/share/man/man1/atos.1")
         let scan = try await scanLibrary(roots: [source])
@@ -579,7 +1008,7 @@ final class DiscoveryIntegrationTests: XCTestCase {
         let file = DiscoveryCheckpointFile(url: checkpointURL)
         let request = UUID()
         await file.activate(request)
-        let initial = newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: [root], allowedNetworkRoots: [], exclusions: []),
+        let initial = try newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: [root], allowedNetworkRoots: [], exclusions: []),
                                              title: "Streamed integration scan")
         let worker = Task.detached {
             try await continueDiscovery(checkpoint: initial, previous: [], progress: { value in

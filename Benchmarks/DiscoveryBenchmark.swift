@@ -1,7 +1,8 @@
 import Foundation
+import CryptoKit
 import Darwin
 
-enum BenchmarkCommand: String, Codable { case scan, resume }
+enum BenchmarkCommand: String, Codable { case scan, wholeFilesystem = "whole-filesystem", resume }
 enum BenchmarkTelemetry: String, Codable { case enabled, disabled }
 enum BenchmarkCacheState: String, Codable { case cold, warm, unknown }
 
@@ -136,7 +137,10 @@ actor BenchmarkProgress {
             processorCount: ProcessInfo.processInfo.activeProcessorCount,
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString, indexingConcurrency: 4,
             samplingError: samplingError, operationError: operationError,
-            limitations: ["Only explicitly supplied local roots were scanned; this is a bounded Deep Scan traversal benchmark, not whole-Mac coverage.",
+            limitations: [checkpoint.plan.roots.contains(where: { $0.path == "/" })
+                ? "The production Deep Scan plan lists local volumes mounted at scan start. Network volumes, inaccessible paths, cloud placeholders and the harness-owned output subtree remain explicit coverage gaps."
+                : "Only explicitly supplied local roots were scanned; this is a bounded Deep Scan traversal benchmark, not whole-Mac coverage.",
+                "This is a traversal, not a filesystem snapshot. Resume validates unfinished directory identities and consumed entry prefixes; previously consumed contents and newly mounted volumes require a fresh scan.",
                 "Discovery uses the production scanner and checkpoints. Indexing uses production formattedManualText and ManualSearchIndex with at most four workers; the CLI does not render a reader window.",
                 "Cache state is a caller annotation; this harness never flushes system caches or changes security settings.",
                 "MainActor telemetry measures CLI executor scheduling; app interaction latency and app RSS require separate rendered-app measurements.",
@@ -166,14 +170,14 @@ struct DiscoveryBenchmark {
         let previous: [ManualPage]
         switch options.command {
         case .scan:
-            guard !FileManager.default.fileExists(atPath: options.output.path) else {
-                throw ManualToolError(message: "Fresh scan output already exists: \(options.output.path). Choose a new directory or use resume for a harness-owned interrupted run.")
-            }
-            try FileManager.default.createDirectory(at: options.output, withIntermediateDirectories: true)
-            try encoder.encode(BenchmarkOwnership(owner: "ManPagesCatalog DiscoveryBenchmark", version: 1, created: started,
-                                                   roots: options.roots)).write(to: ownershipURL, options: .atomic)
-            initial = newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: options.roots, allowedNetworkRoots: [], exclusions: []),
-                                             title: "Bounded Deep Scan benchmark")
+            initial = try prepareBenchmarkOutput(plan: DiscoveryPlan(roots: options.roots, allowedNetworkRoots: [], exclusions: [],
+                traversalExclusions: [benchmarkOutputExclusion(output: options.output)]),
+                title: "Bounded Deep Scan benchmark", output: options.output, started: started)
+            previous = []
+        case .wholeFilesystem:
+            let plan = try benchmarkWholeFilesystemPlan(output: options.output)
+            initial = try prepareBenchmarkOutput(plan: plan, title: "Whole-filesystem Deep Scan measurement",
+                output: options.output, started: started)
             previous = []
         case .resume:
             let owned = try JSONDecoder().decode(BenchmarkOwnership.self, from: Data(contentsOf: ownershipURL))
@@ -181,7 +185,7 @@ struct DiscoveryBenchmark {
                   let checkpoint = try await checkpointFile.load(), checkpoint.plan.roots == owned.roots else {
                 throw ManualToolError(message: "Cannot resume \(options.output.path): missing or invalid harness ownership/checkpoint.")
             }
-            initial = checkpoint
+            initial = try benchmarkResumeCheckpoint(checkpoint: checkpoint, output: options.output)
             let inventoryURL = options.output.appendingPathComponent("inventory.json")
             previous = FileManager.default.fileExists(atPath: inventoryURL.path) ? try loadDiscovery(inventoryURL).pages : checkpoint.snapshot.pages
         }
@@ -244,6 +248,68 @@ struct DiscoveryBenchmark {
     }
 }
 
+/// Use the app's mounted-local-volume policy and explicitly exclude this measurement's own changing files.
+func benchmarkWholeFilesystemPlan(output: URL) throws -> DiscoveryPlan {
+    let plan = try deepDiscoveryPlan(additional: [])
+    let physicalOutput = output.resolvingSymlinksInPath()
+    guard !plan.roots.contains(where: { pathContains(root: physicalOutput.path, path: $0.resolvingSymlinksInPath().path) }) else {
+        throw ManualToolError(message: "Whole-filesystem output cannot contain a scan root: \(output.path). Choose a new child folder for this measurement.")
+    }
+    return DiscoveryPlan(roots: plan.roots, allowedNetworkRoots: plan.allowedNetworkRoots, exclusions: plan.exclusions,
+        traversalExclusions: (plan.traversalExclusions ?? []) + [benchmarkOutputExclusion(output: output)])
+}
+
+func benchmarkOutputExclusion(output: URL) -> DiscoveryIssue {
+    DiscoveryIssue(path: output.resolvingSymlinksInPath().path, kind: .excluded,
+        reason: "Harness-owned measurement output; excluded to avoid scanning changing checkpoints, logs and index files.")
+}
+
+/// Only a new output directory is created; this never opens an existing user's app library.
+func prepareBenchmarkOutput(plan: DiscoveryPlan, title: String, output: URL, started: Date) throws -> DiscoveryCheckpoint {
+    guard !FileManager.default.fileExists(atPath: output.path) else {
+        throw ManualToolError(message: "Fresh scan output already exists: \(output.path). Choose a new directory or use resume for a harness-owned interrupted run.")
+    }
+    var ancestor = output.deletingLastPathComponent()
+    while !FileManager.default.fileExists(atPath: ancestor.path) {
+        let parent = ancestor.deletingLastPathComponent()
+        guard parent != ancestor else { throw ManualToolError(message: "Cannot locate an existing local parent for benchmark output \(output.path).") }
+        ancestor = parent
+    }
+    try requireDiscoveryVolume(url: ancestor, allowedNetworkRoots: [])
+    try validateBenchmarkOutputScope(plan: plan, output: output)
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(BenchmarkOwnership(owner: "ManPagesCatalog DiscoveryBenchmark", version: 1, created: started,
+        roots: plan.roots)).write(to: output.appendingPathComponent(".manpages-benchmark-run.json"), options: .atomic)
+    return try newDiscoveryCheckpoint(plan: plan, title: title)
+}
+
+/// Resuming an overlapping run requires the exact canonical output exclusion persisted with its plan.
+func validateBenchmarkOutputScope(plan: DiscoveryPlan, output: URL) throws {
+    let physicalOutput = output.resolvingSymlinksInPath().path
+    let overlapping = plan.roots.contains { pathContains(root: $0.resolvingSymlinksInPath().path, path: physicalOutput) }
+    guard !plan.roots.contains(where: { pathContains(root: physicalOutput, path: $0.resolvingSymlinksInPath().path) }),
+          !overlapping || (plan.traversalExclusions ?? []).contains(where: { $0.kind == .excluded && $0.path == physicalOutput }) else {
+        throw ManualToolError(message: "Cannot use benchmark output \(output.path): it overlaps the scan without an exact persisted output exclusion. Choose a separate new output or retain the original whole-filesystem run folder.")
+    }
+}
+
+/// Validate the saved scope before extending legacy selected-root runs with an exclusion for future output reads.
+/// Previously traversed sources and cached content remain historical until a fresh scan reconciles them.
+func benchmarkResumeCheckpoint(checkpoint: DiscoveryCheckpoint, output: URL) throws -> DiscoveryCheckpoint {
+    try validateBenchmarkOutputScope(plan: checkpoint.plan, output: output)
+    let exclusion = benchmarkOutputExclusion(output: output)
+    let existing = checkpoint.plan.traversalExclusions ?? []
+    if existing.contains(where: { $0.path == exclusion.path }) { return checkpoint }
+    let plan = DiscoveryPlan(roots: checkpoint.plan.roots, allowedNetworkRoots: checkpoint.plan.allowedNetworkRoots,
+        exclusions: checkpoint.plan.exclusions, traversalExclusions: existing + [exclusion])
+    return DiscoveryCheckpoint(version: checkpoint.version, title: checkpoint.title, started: checkpoint.started,
+        bootReference: checkpoint.bootReference, bootReferenceClock: checkpoint.bootReferenceClock, plan: plan, updated: checkpoint.updated, roots: checkpoint.roots,
+        visited: checkpoint.visited, visitedRootIndices: checkpoint.visitedRootIndices,
+        pages: checkpoint.pages, peakPending: checkpoint.peakPending)
+}
+
 func benchmarkOperation(initial: DiscoveryCheckpoint, previous: [ManualPage], file: DiscoveryCheckpointFile,
                         request: UUID, progress: BenchmarkProgress, recorder: ScanPerformanceRecorder?, output: URL) async throws {
     let began = ProcessInfo.processInfo.systemUptime
@@ -270,7 +336,8 @@ func benchmarkOperation(initial: DiscoveryCheckpoint, previous: [ManualPage], fi
     await progress.beginIndexing()
     await recorder?.beginIndexing(total: pending.count)
     let indexingBegan = ProcessInfo.processInfo.systemUptime
-    do { try await benchmarkIndex(pages: pending, index: index, progress: progress, recorder: recorder) }
+    do { try await benchmarkIndex(pages: pending, index: index, progress: progress, recorder: recorder,
+        allowedNetworkRoots: initial.plan.allowedNetworkRoots, exclusions: discoveryExcludedPaths(plan: initial.plan)) }
     catch {
         await progress.finishIndexing(seconds: ProcessInfo.processInfo.systemUptime - indexingBegan)
         throw error
@@ -280,13 +347,13 @@ func benchmarkOperation(initial: DiscoveryCheckpoint, previous: [ManualPage], fi
 }
 
 func benchmarkIndex(pages: [ManualPage], index: ManualSearchIndex, progress: BenchmarkProgress,
-                    recorder: ScanPerformanceRecorder?) async throws {
+                    recorder: ScanPerformanceRecorder?, allowedNetworkRoots: [URL], exclusions: [DiscoveryExcludedPath]) async throws {
     try await withThrowingTaskGroup(of: BenchmarkIndexOutcome.self) { group in
         var next = 0
         var active = 0
         while next < min(4, pages.count) {
             let page = pages[next]
-            group.addTask { try await benchmarkIndexPage(page: page, index: index) }
+            group.addTask { try await benchmarkIndexPage(page: page, index: index, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions) }
             next += 1
             active += 1
         }
@@ -300,7 +367,7 @@ func benchmarkIndex(pages: [ManualPage], index: ManualSearchIndex, progress: Ben
                 try Task.checkCancellation()
                 if next < pages.count {
                     let page = pages[next]
-                    group.addTask { try await benchmarkIndexPage(page: page, index: index) }
+                    group.addTask { try await benchmarkIndexPage(page: page, index: index, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions) }
                     next += 1
                     active += 1
                 }
@@ -323,9 +390,17 @@ func benchmarkIndex(pages: [ManualPage], index: ManualSearchIndex, progress: Ben
     }
 }
 
-func benchmarkIndexPage(page: ManualPage, index: ManualSearchIndex) async throws -> BenchmarkIndexOutcome {
+func benchmarkIndexPage(page: ManualPage, index: ManualSearchIndex, allowedNetworkRoots: [URL], exclusions: [DiscoveryExcludedPath]) async throws -> BenchmarkIndexOutcome {
     do {
-        let formatted = try await formattedManualText(source: page.source)
+        let input = try await validatedManualInput(source: page.source) { target in
+            try requireDiscoveryScope(url: target, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions)
+            try requireMaterializedManual(target)
+        }
+        let fingerprint = SHA256.hash(data: input.bytes).map { String(format: "%02x", $0) }.joined()
+        guard fingerprint == page.fingerprint else {
+            throw ManualToolError(message: "Manual source changed after discovery: \(page.source.path). Start a fresh scan to index its current content; the previous fingerprint was not written to SQLite.")
+        }
+        let formatted = try await formattedManualText(input: input)
         let description = descriptionFromFormattedManual(formatted.text)
         try await index.store(page: page, text: formatted.text, description: description, diagnostic: formatted.diagnostic)
         return BenchmarkIndexOutcome(id: page.id, description: description,
@@ -335,7 +410,7 @@ func benchmarkIndexPage(page: ManualPage, index: ManualSearchIndex) async throws
 }
 
 func benchmarkOptions(arguments: [String]) throws -> BenchmarkOptions {
-    let usage = "Usage: discovery-benchmark scan|resume --output /new/owned/output --cancel-seconds NUMBER --telemetry enabled|disabled --cache-state cold|warm|unknown [--root /local/tree ...]. Resume uses its saved roots."
+    let usage = "Usage: discovery-benchmark scan|whole-filesystem|resume --output /new/owned/output --cancel-seconds NUMBER --telemetry enabled|disabled --cache-state cold|warm|unknown [--root /local/tree ...]. Scan requires roots; whole-filesystem uses the production local-volume plan; resume uses its saved plan."
     guard let first = arguments.first, let command = BenchmarkCommand(rawValue: first) else { throw ManualToolError(message: usage) }
     var output: URL?
     var seconds: Double?

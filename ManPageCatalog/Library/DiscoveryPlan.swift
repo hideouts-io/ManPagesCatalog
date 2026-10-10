@@ -3,7 +3,21 @@ import Foundation
 struct DiscoveryPlan: Codable, Sendable {
     let roots: [URL]
     let allowedNetworkRoots: [URL]
+    /// Informational gaps, such as a network volume outside explicitly selected child folders.
     let exclusions: [DiscoveryIssue]
+    /// Explicitly skipped subtrees, including resolved symlink and whole-file manual alias targets.
+    let traversalExclusions: [DiscoveryIssue]?
+
+    init(roots: [URL], allowedNetworkRoots: [URL], exclusions: [DiscoveryIssue]) {
+        self.init(roots: roots, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions, traversalExclusions: [])
+    }
+
+    init(roots: [URL], allowedNetworkRoots: [URL], exclusions: [DiscoveryIssue], traversalExclusions: [DiscoveryIssue]) {
+        self.roots = roots
+        self.allowedNetworkRoots = allowedNetworkRoots
+        self.exclusions = exclusions
+        self.traversalExclusions = traversalExclusions
+    }
 }
 
 /// MANPATH remains an explicit bounded scope. manpath itself reads the platform's man.conf files.

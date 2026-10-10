@@ -47,11 +47,37 @@ func requireMaterializedManual(_ url: URL) throws {
 
 func requireDiscoveryVolume(url: URL, allowedNetworkRoots: [URL]) throws {
     let resolved = url.resolvingSymlinksInPath()
-    if allowedNetworkRoots.contains(where: { pathContains(root: $0.resolvingSymlinksInPath().path, path: resolved.path) }) { return }
-    let values = try resolved.resourceValues(forKeys: [.volumeIsLocalKey])
+    try requireResolvedDiscoveryVolume(url: resolved, allowedNetworkRoots: allowedNetworkRoots)
+}
+
+func requireResolvedDiscoveryVolume(url: URL, allowedNetworkRoots: [URL]) throws {
+    if allowedNetworkRoots.contains(where: { pathContains(root: $0.resolvingSymlinksInPath().path, path: url.path) }) { return }
+    let values = try url.resourceValues(forKeys: [.volumeIsLocalKey])
     guard values.volumeIsLocal == true else {
         throw DiscoveryAccessError(kind: .excluded, message: "Network or unidentified volume; select this folder explicitly to authorize scanning it.")
     }
+}
+
+struct DiscoveryExcludedPath: Sendable {
+    let issue: DiscoveryIssue
+    let resolvedPath: String
+}
+
+func discoveryExcludedPaths(plan: DiscoveryPlan) -> [DiscoveryExcludedPath] {
+    (plan.traversalExclusions ?? []).map {
+        DiscoveryExcludedPath(issue: $0, resolvedPath: URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path)
+    }
+}
+
+/// Match both names of an excluded subtree before inspecting entries or following directory streams.
+func requireDiscoveryScope(url: URL, allowedNetworkRoots: [URL], exclusions: [DiscoveryExcludedPath]) throws {
+    let resolved = url.resolvingSymlinksInPath()
+    if let exclusion = exclusions.first(where: {
+        pathContains(root: $0.issue.path, path: url.path) || pathContains(root: $0.resolvedPath, path: resolved.path)
+    }) {
+        throw DiscoveryAccessError(kind: .excluded, message: "Excluded subtree \(exclusion.issue.path): \(exclusion.issue.reason)")
+    }
+    try requireResolvedDiscoveryVolume(url: resolved, allowedNetworkRoots: allowedNetworkRoots)
 }
 
 func discoveryIssue(url: URL, error: Error) -> DiscoveryIssue {
@@ -126,7 +152,7 @@ func manualCompression(_ bytes: Data) -> ManualCompression? {
     return signatures.first(where: { bytes.starts(with: $0.1) })?.0
 }
 
-func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetworkRoots: [URL]) async throws -> ManualPage? {
+func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetworkRoots: [URL], exclusions: [DiscoveryExcludedPath]) async throws -> ManualPage? {
     let filename = autoreleasepool { manualFilename(file) }
     // An empty regular file cannot contain a manual header or compression signature.
     if state.size == 0 {
@@ -151,7 +177,7 @@ func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetwo
     let problem: String?
     do {
         input = try await validatedManualInput(source: file) { target in
-            try requireDiscoveryVolume(url: target, allowedNetworkRoots: allowedNetworkRoots)
+            try requireDiscoveryScope(url: target, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions)
             try requireMaterializedManual(target)
         }
         problem = nil
@@ -318,6 +344,7 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
                        progress: @Sendable (DiscoveryProgress) async -> Void,
                        save: @Sendable (DiscoveryCheckpoint) async throws -> Void) async throws -> LibraryScan {
     var state = checkpoint
+    let exclusions = discoveryExcludedPaths(plan: state.plan)
     var cached: [String: ManualPage] = [:]
     for page in previous { for location in page.locations { cached[location.source.path] = page.at(location) } }
     var segmentPeak = state.pendingCount
@@ -330,7 +357,7 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
         do {
             for cursor in state.roots[index].directoriesInProgress {
                 try Task.checkCancellation()
-                try requireDiscoveryVolume(url: cursor.directory, allowedNetworkRoots: state.plan.allowedNetworkRoots)
+                try requireDiscoveryScope(url: cursor.directory, allowedNetworkRoots: state.plan.allowedNetworkRoots, exclusions: exclusions)
                 let file = try materializedFileState(cursor.directory)
                 let stream = try DiscoveryDirectoryStream(directory: cursor.directory, expectedIdentity: file.identity, allowedNetworkRoots: state.plan.allowedNetworkRoots)
                 try stream.restore(cursor)
@@ -376,17 +403,23 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
                 try Task.checkCancellation()
                 // Foundation path/volume bridges create temporary objects on this long-lived worker.
                 let file = try autoreleasepool {
-                    try requireDiscoveryVolume(url: url, allowedNetworkRoots: state.plan.allowedNetworkRoots)
+                    try requireDiscoveryScope(url: url, allowedNetworkRoots: state.plan.allowedNetworkRoots, exclusions: exclusions)
                     return try materializedFileState(url)
                 }
                 if file.directory {
                     if let first = state.visited[file.identity] {
-                        state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .excluded, reason: "Directory already traversed at \(first); avoids duplicate traversal and link cycles."))
+                        let owner = state.visitedRootIndices?[file.identity].map { state.roots[$0].root }
+                        let reference = DiscoveryDirectoryReference(directory: URL(fileURLWithPath: first), identity: file.identity, root: owner)
+                        state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .excluded,
+                            reason: "Directory uses the measured location below; it is not traversed again. That location's pending work and gaps still apply.",
+                            directoryReference: reference))
                     } else if streams.count >= maximumDiscoveryDirectoryDepth {
                         state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .unsupported, reason: "Directory depth exceeds the bounded \(maximumDiscoveryDirectoryDepth)-stream traversal limit; this subtree was not inspected."))
                     } else {
                         openedDirectory = try DiscoveryDirectoryStream(directory: url, expectedIdentity: file.identity, allowedNetworkRoots: state.plan.allowedNetworkRoots)
                         state.visited[file.identity] = url.path
+                        if state.visitedRootIndices == nil { state.visitedRootIndices = [:] }
+                        state.visitedRootIndices?[file.identity] = index
                         state.roots[index].directories += 1
                     }
                 } else {
@@ -399,7 +432,7 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
                             reused.locations = [ManualLocation(source: url, root: root, name: old.name, section: old.section, language: old.language, stamp: "direct:" + file.stamp)]
                             page = reused.at(reused.locations[0])
                         } else {
-                            page = try await discoveredManual(file: url, root: root, state: file, allowedNetworkRoots: state.plan.allowedNetworkRoots)
+                            page = try await discoveredManual(file: url, root: root, state: file, allowedNetworkRoots: state.plan.allowedNetworkRoots, exclusions: exclusions)
                         }
                         if let page {
                             state.pages.append(page)

@@ -107,7 +107,7 @@ struct SourcesView: View {
                                     if !issues.isEmpty {
                                         DisclosureGroup("\(kind.rawValue.capitalized): \(issues.count)") {
                                             ForEach(Array(issues.prefix(100).enumerated()), id: \.offset) { _, issue in
-                                                Text("\(issue.path)\n\(issue.reason)").font(.caption).textSelection(.enabled)
+                                                CoverageIssueView(issue: issue)
                                             }
                                             if issues.count > 100 { Text("First 100 shown. Export Coverage includes every recorded location.").font(.caption) }
                                         }.accessibilityIdentifier("coverage-\(kind.rawValue)-\(source.root.path)")
@@ -183,6 +183,31 @@ struct SourcesView: View {
                 } else { reportError = "Cannot open coverage export: \(error.localizedDescription)" }
             }
         }
+    }
+}
+
+struct CoverageIssueView: View {
+    let issue: DiscoveryIssue
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(issue.path).font(.system(.caption, design: .monospaced))
+            Text(issue.reason).font(.caption)
+            if let reference = issue.directoryReference {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Measured through: \(reference.directory.path)")
+                    if let root = reference.root {
+                        Text("Coverage root: \(root.path)")
+                    } else {
+                        Text("This older checkpoint did not record the owning coverage root. Start a fresh scan to establish it.")
+                    }
+                }.font(.caption).foregroundStyle(.secondary)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("coverageDirectoryReference-\(issue.path)")
+            }
+        }.textSelection(.enabled)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("coverageIssue-\(issue.path)")
     }
 }
 
