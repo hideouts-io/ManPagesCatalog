@@ -11,6 +11,13 @@ struct ContentView: View {
     @State private var searchFocusRequest = UUID()
 
     var body: some View {
+        VStack(spacing: 0) {
+            catalogContent
+            statusBar
+        }.frame(minWidth: 920, minHeight: 600)
+    }
+
+    private var catalogContent: some View {
         NavigationSplitView {
             List(selection: $library.section) {
                 Label("All Manuals", systemImage: "books.vertical").tag(Optional<String>.none).accessibilityIdentifier("sectionAll")
@@ -109,9 +116,9 @@ struct ContentView: View {
                         if let page = await library.firstResultForCurrentSearch() { open(page) }
                         else { InteractionDiagnostics.readerInputCancelled() }
                     }
-                }.frame(minWidth: 240, idealWidth: 320, maxWidth: 420)
+                }.frame(minWidth: 160, idealWidth: 220, maxWidth: 280)
             }
-            ToolbarItem {
+            ToolbarItem(placement: .primaryAction) {
                 Button { terminal.expanded.toggle() } label: {
                     Label(terminal.active ? "Terminal • Running" : "Terminal", systemImage: "terminal").labelStyle(.titleAndIcon)
                 }.accessibilityIdentifier("toggleTerminalPane").keyboardShortcut("j", modifiers: .command)
@@ -120,17 +127,6 @@ struct ContentView: View {
                 Button { openWindow(id: "sources") } label: { Label("Scan & Sources", systemImage: "externaldrive.badge.magnifyingglass").labelStyle(.titleAndIcon) }
                     .accessibilityIdentifier("manageSources")
             }
-        }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Text(library.errorMessage ?? library.status).lineLimit(2).textSelection(.enabled).accessibilityIdentifier("libraryStatus").accessibilityValue(library.errorMessage ?? library.status)
-                Spacer()
-                if terminal.active {
-                    Button("Show Running Terminal") { terminal.expanded = true }
-                        .accessibilityIdentifier("showRunningTerminal")
-                }
-                if library.isIndexing { Button(library.phase == .discovering ? "Pause Scan" : "Pause Indexing") { library.stop() }.accessibilityIdentifier("stopIndexing") }
-            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 6).background(.bar)
         }
         .task {
             reader.onReference = { name, section in followReference(name: name, section: section) }
@@ -166,7 +162,18 @@ struct ContentView: View {
                let section = parts.queryItems?.first(where: { $0.name == "section" })?.value { followReference(name: name, section: section) }
             else { library.searchAll(); library.query = parts.queryItems?.first(where: { $0.name == "query" })?.value ?? url.host ?? ""; searchFocusRequest = UUID() }
         }
-        .frame(minWidth: 920, minHeight: 600)
+    }
+
+    private var statusBar: some View {
+        HStack {
+            Text(library.errorMessage ?? library.status).lineLimit(2).textSelection(.enabled).accessibilityIdentifier("libraryStatus").accessibilityValue(library.errorMessage ?? library.status)
+            Spacer()
+            if terminal.active {
+                Button("Show Running Terminal") { terminal.expanded = true }
+                    .accessibilityIdentifier("showRunningTerminal")
+            }
+            if library.isIndexing { Button(library.phase == .discovering ? "Pause Scan" : "Pause Indexing") { library.stop() }.accessibilityIdentifier("stopIndexing") }
+        }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 6).background(.bar)
     }
 
     private func open(_ page: ManualPage) {

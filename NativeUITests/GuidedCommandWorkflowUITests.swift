@@ -145,7 +145,7 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
             try waitForText(expected, identifier: "generatedCommandPreview", application: application)
             try assertReviewed(application: application, expected: false)
             try click(identifier: "reviewCommandDraft", application: application)
-            let chosenWorkingFolder = FileManager.default.homeDirectoryForCurrentUser
+            let chosenWorkingFolder = otherFolder
             try chooseWorkingFolder(directory: chosenWorkingFolder, application: application)
             let workingFolder = chosenWorkingFolder.resolvingSymlinksInPath().standardizedFileURL.path
             try waitForText(workingFolder, identifier: "draftDirectory", application: application)
@@ -197,6 +197,7 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
             try waitForText(text, identifier: "generatedCommandPreview", application: application)
             try assertNoExecution(application: application, marker: marker)
             try click(identifier: "reviewCommandDraft", application: application)
+            try assertReviewed(application: application, expected: true)
             try click(identifier: "runCommandDraft", application: application)
             try waitForText("Running", identifier: "terminalOutcome", application: application)
             _ = try waitForOutput(containing: ["owned-ui-started"], application: application)
@@ -308,7 +309,15 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
         try replaceText(directory.path, identifier: "PathTextField", application: application)
         let path = try element(identifier: "PathTextField", application: application)
         path.typeKey(.return, modifierFlags: [])
-        try waitForAbsence(identifier: "GoToWindow", application: application)
+        // The native panel retains its hidden GoToWindow accessibility container after navigation.
+        // Its editable path control must stop accepting input before the main Open button is used.
+        let dismissal = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !path.exists || !path.isHittable
+        }, object: nil)
+        guard XCTWaiter.wait(for: [dismissal], timeout: 5) == .completed else {
+            try attachOwnedWindow(application: application, name: "Native folder picker after Go To Folder confirmation")
+            throw WorkflowTestError(message: "The native Go To Folder input remained visible after confirming the selected path.")
+        }
         let buttons = panels.firstMatch.buttons.matching(identifier: "OKButton")
         guard buttons.firstMatch.waitForExistence(timeout: 5), buttons.count == 1 else {
             throw WorkflowTestError(message: "The working folder picker did not expose its unique OKButton.")
@@ -332,7 +341,9 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
         } else {
             throw WorkflowTestError(message: "The native checkbox \(identifier) did not expose a 0 or 1 String or NSNumber value.")
         }
-        XCTAssertEqual(reviewed, expected)
+        guard reviewed == expected else {
+            throw WorkflowTestError(message: "Native checkbox \(identifier) is \(reviewed), expected \(expected).")
+        }
     }
 
     private func waitForClipboard(_ expected: String) throws {
@@ -361,6 +372,8 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
     private func element(identifier: String, application: XCUIApplication) throws -> XCUIElement {
         let query = application.descendants(matching: .any).matching(identifier: identifier)
         guard query.firstMatch.waitForExistence(timeout: 5), query.count == 1 else {
+            do { try attachOwnedWindow(application: application, name: "Native command window at missing control") }
+            catch { XCTFail("Cannot attach the owned browser window for a missing control: \(error)") }
             throw WorkflowTestError(message: "Expected one native command control \(identifier); found \(query.count).")
         }
         return query.firstMatch
@@ -421,7 +434,7 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
     }
 
     private func attachOwnedWindow(application: XCUIApplication, name: String) throws {
-        let windows = application.windows.containing(.any, identifier: "toggleTerminalPane")
+        let windows = application.windows.matching(identifier: "browser")
         guard windows.count == 1, windows.firstMatch.exists else {
             throw WorkflowTestError(message: "Cannot attach the uniquely identified owned command window for \(name); found \(windows.count).")
         }
