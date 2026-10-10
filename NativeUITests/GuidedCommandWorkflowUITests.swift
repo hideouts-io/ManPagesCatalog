@@ -82,6 +82,7 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
         try assertNoExecution(application: application, marker: marker)
 
         try click(identifier: "expandTerminalPane", application: application)
+        try assertCommandControlsInsideWindow(application: application)
         let windows = application.windows.containing(.any, identifier: "expandTerminalPane")
         let window = windows.firstMatch
         guard window.waitForExistence(timeout: 5), windows.count == 1 else {
@@ -182,6 +183,7 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
             try waitForClipboard(output)
             XCTAssertEqual(application.descendants(matching: .any).matching(identifier: "interruptTerminal").count, 0)
             XCTAssertEqual(application.descendants(matching: .any).matching(identifier: "endTerminalSession").count, 0)
+            try assertCommandControlsInsideWindow(application: application)
             try attachOwnedWindow(application: application, name: "Native guided command completed with readable output")
         }
     }
@@ -238,6 +240,7 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
             try waitForAbsence(identifier: "interruptTerminal", application: application)
             try waitForAbsence(identifier: "endTerminalSession", application: application)
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+            try assertCommandControlsInsideWindow(application: application)
             try attachOwnedWindow(application: application, name: "Native terminal after explicit session end")
         }
     }
@@ -309,15 +312,8 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
         try replaceText(directory.path, identifier: "PathTextField", application: application)
         let path = try element(identifier: "PathTextField", application: application)
         path.typeKey(.return, modifierFlags: [])
-        // The native panel retains its hidden GoToWindow accessibility container after navigation.
-        // Its editable path control must stop accepting input before the main Open button is used.
-        let dismissal = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            !path.exists || !path.isHittable
-        }, object: nil)
-        guard XCTWaiter.wait(for: [dismissal], timeout: 5) == .completed else {
-            try attachOwnedWindow(application: application, name: "Native folder picker after Go To Folder confirmation")
-            throw WorkflowTestError(message: "The native Go To Folder input remained visible after confirming the selected path.")
-        }
+        // The native panel retains hidden Go To Folder controls and their hittability values.
+        // Wait for the main Open button; the caller verifies the exact selected folder after dismissal.
         let buttons = panels.firstMatch.buttons.matching(identifier: "OKButton")
         guard buttons.firstMatch.waitForExistence(timeout: 5), buttons.count == 1 else {
             throw WorkflowTestError(message: "The working folder picker did not expose its unique OKButton.")
@@ -442,6 +438,21 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    private func assertCommandControlsInsideWindow(application: XCUIApplication) throws {
+        let windows = application.windows.matching(identifier: "browser")
+        guard windows.count == 1, windows.firstMatch.exists else {
+            throw WorkflowTestError(message: "Cannot verify command control bounds without the unique owned browser window.")
+        }
+        let frame = windows.firstMatch.frame
+        for identifier in ["copyDraft", "copyDraftOpenTerminal", "startInteractiveShell", "runCommandDraft"] {
+            let control = try element(identifier: identifier, application: application)
+            guard !control.frame.isEmpty, frame.contains(control.frame) else {
+                try attachOwnedWindow(application: application, name: "Native command control outside its window")
+                throw WorkflowTestError(message: "The native control \(identifier) extends beyond the owned browser window.")
+            }
+        }
     }
 
     private func waitUntilEnabled(element: XCUIElement) throws {

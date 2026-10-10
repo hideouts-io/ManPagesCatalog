@@ -14,7 +14,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             catalogContent
             statusBar
-        }.frame(minWidth: 920, minHeight: 600)
+        }.frame(minWidth: 960, minHeight: 600)
     }
 
     private var catalogContent: some View {
