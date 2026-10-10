@@ -31,7 +31,7 @@ struct GuidedCommandBuilderView: View {
                 ForEach(recipe.options) { option in
                     VStack(alignment: .leading, spacing: 2) {
                         Toggle(option.title + "  (\(option.flag))", isOn: Binding(get: { session.guidedOptions.contains(option.id) }, set: { session.setGuidedOption(id: option.id, selected: $0) }))
-                            .toggleStyle(.checkbox).accessibilityIdentifier("guided-option-\(option.id)")
+                            .toggleStyle(.checkbox).fixedSize().accessibilityIdentifier("guided-option-\(option.id)")
                         Text(option.explanation).font(.caption).foregroundStyle(.secondary).padding(.leading, 20)
                     }
                 }

@@ -11,14 +11,12 @@ struct TerminalPane: View {
             Divider()
             if session.view != nil {
                 VSplitView {
-                    ScrollView { preparation.padding(14) }.frame(minHeight: 100, idealHeight: 240)
+                    commandWorkspace.frame(minHeight: 200, idealHeight: 300)
                     output.frame(minHeight: 120, idealHeight: 240)
                 }
             } else {
-                ScrollView { preparation.padding(14) }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                commandWorkspace
             }
-            Divider()
-            execution.padding(12)
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(.bar)
         .alert("End this terminal session?", isPresented: $confirmEnd) {
             Button("End Session", role: .destructive) { session.stop() }.accessibilityIdentifier("confirmEndTerminal")
@@ -26,9 +24,22 @@ struct TerminalPane: View {
         } message: { Text("The shell and processes still attached to its session will be stopped. Unsaved work in those programs can be lost.") }
     }
 
+    private var commandWorkspace: some View {
+        HSplitView {
+            ScrollView { preparation.padding(12) }
+                .frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                ScrollView { executionDetails.padding(12) }
+                    .frame(maxWidth: .infinity, minHeight: 100, maxHeight: .infinity)
+                Divider()
+                executionControls.padding(12)
+            }.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var header: some View {
         HStack {
-            Label("Terminal & Command Builder", systemImage: "terminal").font(.headline)
+            Label("Terminal", systemImage: "terminal").font(.headline)
             VStack {
                 Text(session.outcome.title).font(.caption).foregroundStyle(session.outcome == .failed ? Color.red : Color.secondary)
                     .accessibilityValue(session.outcome.title).accessibilityIdentifier("terminalOutcome")
@@ -92,7 +103,7 @@ struct TerminalPane: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var execution: some View {
+    private var executionDetails: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(session.guidedRecipe == nil ? "Review your command" : "3  Review the exact command").font(.headline)
             Text(session.commandSummary).font(.caption).textSelection(.enabled)
@@ -131,24 +142,7 @@ struct TerminalPane: View {
             if let issue = session.runIssue {
                 VStack(alignment: .leading) { Label(issue, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
                     .accessibilityElement(children: .ignore).accessibilityAddTraits(.isStaticText).accessibilityLabel("Command needs attention").accessibilityValue(issue).accessibilityIdentifier("draftIssue")
-            } else {
-                Toggle("I reviewed all \(session.draft.lineCount) line(s), inputs, working folder, and effects", isOn: $session.reviewed)
-                    .font(.caption).toggleStyle(.checkbox).accessibilityIdentifier("reviewCommandDraft")
             }
-            HStack {
-                Button("Copy Command") { perform { try session.copyDraft() } }.disabled(session.draftText.isEmpty || session.guidanceIssue != nil).accessibilityIdentifier("copyDraft")
-                Button("Open in Terminal") { perform { try session.copyAndOpenTerminal() } }
-                    .disabled(session.draftText.isEmpty || session.guidanceIssue != nil)
-                    .help("Copies this exact preview and opens Terminal.app for you to paste. Choose its working folder there before running. Nothing is executed.")
-                    .accessibilityIdentifier("copyDraftOpenTerminal")
-                Spacer()
-                Button("Start Interactive Shell") { perform { try session.startShell() } }
-                    .disabled(session.active || session.stopping || session.directoryIssue != nil).accessibilityIdentifier("startInteractiveShell")
-                Button("Run Command") { perform { try session.runDraft() } }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(session.active || session.stopping || !session.reviewed || session.runIssue != nil)
-                    .accessibilityIdentifier("runCommandDraft")
-            }.controlSize(.small)
             if let error = session.errorMessage {
                 VStack(alignment: .leading) { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
                     .accessibilityElement(children: .ignore).accessibilityAddTraits(.isStaticText).accessibilityLabel("Terminal error").accessibilityValue(error).accessibilityIdentifier("terminalError")
@@ -158,6 +152,32 @@ struct TerminalPane: View {
             if session.outcome == .failed { Text("Review the output for the error. Check inputs and permissions, then review the command before trying again.").font(.caption).foregroundStyle(.secondary) }
             if session.outcome == .interrupted { Text("The program was interrupted. Review its output; any changes it already made may remain.").font(.caption).foregroundStyle(.secondary) }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var executionControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if session.runIssue == nil {
+                Toggle("I reviewed the command, folder, inputs and effects", isOn: $session.reviewed)
+                    .font(.caption).toggleStyle(.checkbox).fixedSize().accessibilityIdentifier("reviewCommandDraft")
+            }
+            HStack {
+                Button("Copy Command") { perform { try session.copyDraft() } }.disabled(session.draftText.isEmpty || session.guidanceIssue != nil).accessibilityIdentifier("copyDraft")
+                Button("Open in Terminal") { perform { try session.copyAndOpenTerminal() } }
+                    .disabled(session.draftText.isEmpty || session.guidanceIssue != nil)
+                    .help("Copies this exact preview and opens Terminal.app for you to paste. Choose its working folder there before running. Nothing is executed.")
+                    .accessibilityIdentifier("copyDraftOpenTerminal")
+                Spacer()
+            }
+            HStack {
+                Button("Start Interactive Shell") { perform { try session.startShell() } }
+                    .disabled(session.active || session.stopping || session.directoryIssue != nil).accessibilityIdentifier("startInteractiveShell")
+                Spacer()
+                Button("Run Command") { perform { try session.runDraft() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(session.active || session.stopping || !session.reviewed || session.runIssue != nil)
+                    .accessibilityIdentifier("runCommandDraft")
+            }
+        }.controlSize(.small).frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var output: some View {

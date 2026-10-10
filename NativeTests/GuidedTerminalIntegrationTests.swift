@@ -346,13 +346,18 @@ final class GuidedTerminalIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(try accessibilityTextValue(windowIdentifier: "guidedTerminalReviewWindow",
             controlIdentifier: "generatedCommandPreview"), changedPreview)
-        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: bitmap)
+        // AppKit constrains the window to the host's display. Capture a separately sized native view
+        // so the retained large-layout assertion does not depend on the CI display resolution.
+        let render = NSHostingView(rootView: TerminalPane(session: session))
+        render.frame = NSRect(x: 0, y: 0, width: 1100, height: 840)
+        render.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(render.bitmapImageRepForCachingDisplay(in: render.bounds))
+        render.cacheDisplay(in: render.bounds, to: bitmap)
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         XCTAssertGreaterThan(bitmap.pixelsWide, 1000)
         XCTAssertGreaterThan(bitmap.pixelsHigh, 700)
         let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
-        attachment.name = "Guided command workspace rendered native view"
+        attachment.name = "Guided command workspace offscreen native view"
         attachment.lifetime = .keepAlways
         add(attachment)
         XCTAssertNil(session.process, "Rendering guidance must not execute a command")

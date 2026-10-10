@@ -112,7 +112,9 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
             try click(identifier: "expandTerminalPane", application: application)
             try replaceText(folder.path, identifier: "guided-input-folder", application: application)
             try click(identifier: "guided-option-hidden", application: application)
+            try assertCheckbox(identifier: "guided-option-hidden", application: application, expected: true)
             try click(identifier: "guided-option-detailed", application: application)
+            try assertCheckbox(identifier: "guided-option-detailed", application: application, expected: true)
             let expected = ["/bin/ls", "-H", "-A", "-l", folder.path].map(quotedShellWord).joined(separator: " ")
             try waitForText(expected, identifier: "generatedCommandPreview", application: application)
             try waitForText("/bin/ls", identifier: "commandExecutablePath", application: application)
@@ -317,14 +319,18 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
     }
 
     private func assertReviewed(application: XCUIApplication, expected: Bool) throws {
-        let control = try element(identifier: "reviewCommandDraft", application: application)
+        try assertCheckbox(identifier: "reviewCommandDraft", application: application, expected: expected)
+    }
+
+    private func assertCheckbox(identifier: String, application: XCUIApplication, expected: Bool) throws {
+        let control = try element(identifier: identifier, application: application)
         let reviewed: Bool
         if let value = control.value as? String, value == "0" || value == "1" {
             reviewed = value == "1"
         } else if let value = control.value as? NSNumber, value == NSNumber(value: 0) || value == NSNumber(value: 1) {
             reviewed = value == NSNumber(value: 1)
         } else {
-            throw WorkflowTestError(message: "The native review checkbox did not expose a 0 or 1 String or NSNumber value.")
+            throw WorkflowTestError(message: "The native checkbox \(identifier) did not expose a 0 or 1 String or NSNumber value.")
         }
         XCTAssertEqual(reviewed, expected)
     }

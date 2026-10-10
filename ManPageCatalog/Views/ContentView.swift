@@ -166,7 +166,7 @@ struct ContentView: View {
                let section = parts.queryItems?.first(where: { $0.name == "section" })?.value { followReference(name: name, section: section) }
             else { library.searchAll(); library.query = parts.queryItems?.first(where: { $0.name == "query" })?.value ?? url.host ?? ""; searchFocusRequest = UUID() }
         }
-        .frame(minWidth: 1060, minHeight: terminal.expanded ? 820 : 650)
+        .frame(minWidth: 920, minHeight: 600)
     }
 
     private func open(_ page: ManualPage) {
