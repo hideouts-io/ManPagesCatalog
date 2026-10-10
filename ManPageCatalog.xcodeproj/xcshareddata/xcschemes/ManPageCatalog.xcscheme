@@ -35,6 +35,20 @@
                ReferencedContainer = "container:ManPageCatalog.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "08561E7D6ADF9946796AB839"
+               BuildableName = "ManPageCatalogUITests.xctest"
+               BlueprintName = "ManPageCatalogUITests"
+               ReferencedContainer = "container:ManPageCatalog.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -61,6 +75,17 @@
                BlueprintIdentifier = "4EC9A7885DDBF1531D534363"
                BuildableName = "ManPageCatalogTests.xctest"
                BlueprintName = "ManPageCatalogTests"
+               ReferencedContainer = "container:ManPageCatalog.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "08561E7D6ADF9946796AB839"
+               BuildableName = "ManPageCatalogUITests.xctest"
+               BlueprintName = "ManPageCatalogUITests"
                ReferencedContainer = "container:ManPageCatalog.xcodeproj">
             </BuildableReference>
          </TestableReference>
