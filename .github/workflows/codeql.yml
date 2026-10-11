@@ -25,6 +25,8 @@ jobs:
       contents: read
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      # Child compiler notes use DEBUG; keep environment-bearing loggers at INFO.
+      CODEQL_EXTRACTOR_SWIFT_LOG_LEVELS: "out:text:debug,*:info,extractor/compiler:debug"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -64,6 +66,7 @@ jobs:
           output: ${{ runner.temp }}/codeql-sarif
           category: /language:swift
       - name: Reject Swift extraction errors
+        id: extraction
         env:
           SARIF_FILE: ${{ runner.temp }}/codeql-sarif/swift.sarif
         run: |
@@ -89,6 +92,20 @@ jobs:
             exit 1
           fi
           printf 'Swift extraction compiler diagnostics: 0\n'
+      - name: Localize accessibility extraction ambiguity
+        if: failure() && steps.extraction.outcome == 'failure'
+        run: >-
+          python3 .github/scripts/report-swift-ambiguity.py
+          "$RUNNER_TEMP/codeql_databases/swift/log/swift/extractor"
+          "$GITHUB_WORKSPACE" "$RUNNER_TEMP/swift-ambiguity.json"
+      - name: Retain bounded compiler notes
+        if: failure() && steps.extraction.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: swift-ambiguity
+          path: ${{ runner.temp }}/swift-ambiguity.json
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload SARIF artifact
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
