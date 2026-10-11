@@ -47,11 +47,37 @@ func requireMaterializedManual(_ url: URL) throws {
 
 func requireDiscoveryVolume(url: URL, allowedNetworkRoots: [URL]) throws {
     let resolved = url.resolvingSymlinksInPath()
-    if allowedNetworkRoots.contains(where: { pathContains(root: $0.resolvingSymlinksInPath().path, path: resolved.path) }) { return }
-    let values = try resolved.resourceValues(forKeys: [.volumeIsLocalKey])
+    try requireResolvedDiscoveryVolume(url: resolved, allowedNetworkRoots: allowedNetworkRoots)
+}
+
+func requireResolvedDiscoveryVolume(url: URL, allowedNetworkRoots: [URL]) throws {
+    if allowedNetworkRoots.contains(where: { pathContains(root: $0.resolvingSymlinksInPath().path, path: url.path) }) { return }
+    let values = try url.resourceValues(forKeys: [.volumeIsLocalKey])
     guard values.volumeIsLocal == true else {
         throw DiscoveryAccessError(kind: .excluded, message: "Network or unidentified volume; select this folder explicitly to authorize scanning it.")
     }
+}
+
+struct DiscoveryExcludedPath: Sendable {
+    let issue: DiscoveryIssue
+    let resolvedPath: String
+}
+
+func discoveryExcludedPaths(plan: DiscoveryPlan) -> [DiscoveryExcludedPath] {
+    (plan.traversalExclusions ?? []).map {
+        DiscoveryExcludedPath(issue: $0, resolvedPath: URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path)
+    }
+}
+
+/// Match both names of an excluded subtree before inspecting entries or following directory streams.
+func requireDiscoveryScope(url: URL, allowedNetworkRoots: [URL], exclusions: [DiscoveryExcludedPath]) throws {
+    let resolved = url.resolvingSymlinksInPath()
+    if let exclusion = exclusions.first(where: {
+        pathContains(root: $0.issue.path, path: url.path) || pathContains(root: $0.resolvedPath, path: resolved.path)
+    }) {
+        throw DiscoveryAccessError(kind: .excluded, message: "Excluded subtree \(exclusion.issue.path): \(exclusion.issue.reason)")
+    }
+    try requireResolvedDiscoveryVolume(url: resolved, allowedNetworkRoots: allowedNetworkRoots)
 }
 
 func discoveryIssue(url: URL, error: Error) -> DiscoveryIssue {
@@ -74,7 +100,7 @@ func manualPrefix(_ url: URL) throws -> Data {
         close(descriptor)
         throw DiscoveryAccessError(kind: .excluded, message: "File changed type or became cloud-only before reading.")
     }
-    var bytes = [UInt8](repeating: 0, count: 65536)
+    var bytes = [UInt8](repeating: 0, count: min(65536, Int(metadata.st_size)))
     let count = read(descriptor, &bytes, bytes.count)
     let failure = errno
     guard close(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -126,9 +152,16 @@ func manualCompression(_ bytes: Data) -> ManualCompression? {
     return signatures.first(where: { bytes.starts(with: $0.1) })?.0
 }
 
-func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetworkRoots: [URL]) async throws -> ManualPage? {
-    let filename = manualFilename(file)
-    let prefix = try manualPrefix(file)
+func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetworkRoots: [URL], exclusions: [DiscoveryExcludedPath]) async throws -> ManualPage? {
+    let filename = autoreleasepool { manualFilename(file) }
+    // An empty regular file cannot contain a manual header or compression signature.
+    if state.size == 0 {
+        if filename != nil {
+            throw DiscoveryAccessError(kind: .unsupported, message: "Candidate is empty and has no manual content.")
+        }
+        return nil
+    }
+    let prefix = try autoreleasepool { try manualPrefix(file) }
     let compression = manualCompression(prefix)
     let compressed = compression != nil || ["gz", "Z", "bz2"].contains(file.pathExtension)
     if compressed && ["tar", "cpio"].contains(file.deletingPathExtension().pathExtension) {
@@ -144,7 +177,7 @@ func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetwo
     let problem: String?
     do {
         input = try await validatedManualInput(source: file) { target in
-            try requireDiscoveryVolume(url: target, allowedNetworkRoots: allowedNetworkRoots)
+            try requireDiscoveryScope(url: target, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions)
             try requireMaterializedManual(target)
         }
         problem = nil
@@ -173,35 +206,225 @@ func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetwo
                       language: language, locations: [location], description: "", indexed: false, problem: problem)
 }
 
-/// Checkpoints keep the unprocessed entry on the stack until processing succeeds or records an error.
-/// Interrupted reads are retried on resume; regular progress never prunes the previous inventory.
+func discoveryDirectoryMetadata(_ value: stat) -> DiscoveryDirectoryMetadata {
+    DiscoveryDirectoryMetadata(device: value.st_dev, inode: value.st_ino,
+        modifiedSeconds: Int64(value.st_mtimespec.tv_sec), modifiedNanoseconds: Int64(value.st_mtimespec.tv_nsec),
+        changedSeconds: Int64(value.st_ctimespec.tv_sec), changedNanoseconds: Int64(value.st_ctimespec.tv_nsec))
+}
+
+/// Permission and extended-attribute changes affect ctime without changing directory entries.
+func sameDiscoveryDirectoryNamespace(current: DiscoveryDirectoryMetadata, saved: DiscoveryDirectoryMetadata) -> Bool {
+    current.device == saved.device && current.inode == saved.inode &&
+        current.modifiedSeconds == saved.modifiedSeconds && current.modifiedNanoseconds == saved.modifiedNanoseconds
+}
+
+/// Owns one native stream and its ordered fingerprint; no directory listing or seek cookie is retained.
+final class DiscoveryDirectoryStream {
+    let directory: URL
+    let metadata: DiscoveryDirectoryMetadata
+    private let allowedNetworkRoots: [URL]
+    private var handle: UnsafeMutablePointer<DIR>?
+    private var prefix = SHA256()
+
+    init(directory: URL, expectedIdentity: String, allowedNetworkRoots: [URL]) throws {
+        let resolved = directory.resolvingSymlinksInPath()
+        let descriptor = open(resolved.path, O_RDONLY | O_DIRECTORY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            let failure = errno
+            throw DiscoveryAccessError(kind: [EACCES, EPERM].contains(failure) ? .inaccessible : .failed, message: "Cannot open directory \(directory.path): \(String(cString: strerror(failure))) (errno \(failure)).")
+        }
+        var value = stat()
+        guard fstat(descriptor, &value) == 0 else {
+            let failure = errno
+            guard Darwin.close(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            throw DiscoveryAccessError(kind: .failed, message: "Cannot inspect opened directory \(directory.path): \(String(cString: strerror(failure))) (errno \(failure)).")
+        }
+        let opened = discoveryDirectoryMetadata(value)
+        guard value.st_mode & S_IFMT == S_IFDIR, value.st_flags & UInt32(SF_DATALESS) == 0, opened.identity == expectedIdentity else {
+            guard Darwin.close(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            throw DiscoveryAccessError(kind: .failed, message: "Directory \(directory.path) changed identity/type or became cloud-only before enumeration. Start a fresh scan to recheck it.")
+        }
+        var filesystem = statfs()
+        guard fstatfs(descriptor, &filesystem) == 0 else {
+            let failure = errno
+            guard Darwin.close(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            throw DiscoveryAccessError(kind: .failed, message: "Cannot inspect the mounted filesystem for \(directory.path): \(String(cString: strerror(failure))) (errno \(failure)).")
+        }
+        // Darwin fdopendir materializes union mounts internally; do not silently lose the buffer bound.
+        guard filesystem.f_flags & UInt32(MNT_UNION) == 0 else {
+            guard Darwin.close(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            throw DiscoveryAccessError(kind: .unsupported, message: "Union-mounted directory \(directory.path) is not streamed: the native runtime would materialize its complete listing. This subtree was not inspected.")
+        }
+        guard let stream = fdopendir(descriptor) else {
+            let failure = errno
+            guard Darwin.close(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            throw DiscoveryAccessError(kind: .failed, message: "Cannot enumerate directory \(directory.path): \(String(cString: strerror(failure))) (errno \(failure)).")
+        }
+        self.directory = directory
+        self.allowedNetworkRoots = allowedNetworkRoots
+        metadata = opened
+        handle = stream
+    }
+
+    // Normal completion closes explicitly and reports errors; unwinding an earlier failure still releases the descriptor.
+    deinit { if let handle { closedir(handle) } }
+
+    func close() throws {
+        guard let stream = handle else { return }
+        handle = nil
+        guard closedir(stream) == 0 else {
+            throw DiscoveryAccessError(kind: .failed, message: "Cannot close directory stream \(directory.path): \(String(cString: strerror(errno))) (errno \(errno)).")
+        }
+    }
+
+    func nextName() throws -> String? {
+        guard let handle else { throw ManualToolError(message: "Directory stream \(directory.path) is already closed.") }
+        while true {
+            try Task.checkCancellation()
+            errno = 0
+            guard let entry = readdir(handle) else {
+                let failure = errno
+                guard failure == 0 else { throw DiscoveryAccessError(kind: .failed, message: "Directory enumeration failed at \(directory.path): \(String(cString: strerror(failure))) (errno \(failure)).") }
+                return nil
+            }
+            let length = Int(entry.pointee.d_namlen)
+            let name = withUnsafeBytes(of: entry.pointee.d_name) { bytes -> String? in
+                guard length > 0, length < bytes.count else { return nil }
+                return String(bytes: bytes.prefix(length), encoding: .utf8)
+            }
+            guard let name, !name.contains("/"), !name.contains("\0") else {
+                throw DiscoveryAccessError(kind: .unsupported, message: "Directory \(directory.path) contains an invalid or non-UTF-8 entry name; remaining entries were not inspected.")
+            }
+            if name != "." && name != ".." { return name }
+        }
+    }
+
+    /// Length-prefix UTF-8 names to distinguish ordered entries without per-entry digest formatting.
+    func commit(_ name: String) {
+        var length = UInt64(name.utf8.count).bigEndian
+        withUnsafeBytes(of: &length) { prefix.update(bufferPointer: $0) }
+        name.withCString { bytes in
+            prefix.update(bufferPointer: UnsafeRawBufferPointer(start: bytes, count: name.utf8.count))
+        }
+    }
+
+    var digest: String { prefix.finalize().map { String(format: "%02x", $0) }.joined() }
+
+    func verifyUnchanged() throws {
+        guard let handle else { throw ManualToolError(message: "Directory stream \(directory.path) is already closed.") }
+        try requireDiscoveryVolume(url: directory, allowedNetworkRoots: allowedNetworkRoots)
+        let bound = try materializedFileState(directory)
+        guard bound.directory, bound.identity == metadata.identity else {
+            throw DiscoveryAccessError(kind: .failed, message: "Directory path \(directory.path) no longer refers to the opened directory. Its measured coverage may be incomplete; start a fresh scan to recheck the changed path.")
+        }
+        var value = stat()
+        guard fstat(dirfd(handle), &value) == 0 else { throw DiscoveryAccessError(kind: .failed, message: "Cannot recheck directory \(directory.path): \(String(cString: strerror(errno))) (errno \(errno)).") }
+        guard sameDiscoveryDirectoryNamespace(current: discoveryDirectoryMetadata(value), saved: metadata) else {
+            throw DiscoveryAccessError(kind: .failed, message: "Directory identity or entry modification time at \(directory.path) changed during enumeration. Its measured coverage may be incomplete; start a fresh scan to recheck it.")
+        }
+    }
+
+    func restore(_ cursor: DiscoveryDirectoryCursor) throws {
+        guard sameDiscoveryDirectoryNamespace(current: metadata, saved: cursor.metadata) else { throw ManualToolError(message: "Cannot resume changed directory \(directory.path): its opened identity or directory entry modification time differs. Start a fresh scan; retained manuals and the saved checkpoint are unchanged.") }
+        for _ in 0..<cursor.consumedEntries {
+            guard let name = try nextName() else { throw ManualToolError(message: "Cannot resume directory \(directory.path): its saved entry prefix is now shorter. Start a fresh scan; retained manuals and the saved checkpoint are unchanged.") }
+            commit(name)
+        }
+        guard digest == cursor.prefixDigest else { throw ManualToolError(message: "Cannot resume directory \(directory.path): entry order or names changed since the checkpoint. Start a fresh scan; retained manuals and the saved checkpoint are unchanged.") }
+        if let pending = cursor.pendingEntry {
+            guard try nextName() == pending else { throw ManualToolError(message: "Cannot resume directory \(directory.path): its interrupted entry changed or moved in enumeration order. Start a fresh scan; retained manuals and the saved checkpoint are unchanged.") }
+        }
+        try verifyUnchanged()
+    }
+}
+
+/// A bounded depth-first stream retains only active directories and one interrupted entry.
+/// Resume replays and validates a stable prefix; already consumed file contents require a fresh scan to recheck.
 func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
                        progress: @Sendable (DiscoveryProgress) async -> Void,
                        save: @Sendable (DiscoveryCheckpoint) async throws -> Void) async throws -> LibraryScan {
     var state = checkpoint
+    let exclusions = discoveryExcludedPaths(plan: state.plan)
     var cached: [String: ManualPage] = [:]
     for page in previous { for location in page.locations { cached[location.source.path] = page.at(location) } }
-    var lastProgress = Date.distantPast
-    var lastSave = Date.distantPast
-    for index in state.roots.indices {
+    var segmentPeak = state.pendingCount
+    var lastProgress = -Double.infinity
+    var reportedFiles: Int = 0
+    var lastSave = -Double.infinity
+    discoveryRoots: for index in state.roots.indices {
         let root = state.roots[index].root
-        while let url = state.roots[index].pending.last, !Task.isCancelled {
+        var streams: [DiscoveryDirectoryStream] = []
+        do {
+            for cursor in state.roots[index].directoriesInProgress {
+                try Task.checkCancellation()
+                try requireDiscoveryScope(url: cursor.directory, allowedNetworkRoots: state.plan.allowedNetworkRoots, exclusions: exclusions)
+                let file = try materializedFileState(cursor.directory)
+                let stream = try DiscoveryDirectoryStream(directory: cursor.directory, expectedIdentity: file.identity, allowedNetworkRoots: state.plan.allowedNetworkRoots)
+                try stream.restore(cursor)
+                streams.append(stream)
+            }
+        } catch is CancellationError {
+            for stream in streams { try stream.close() }
+            break discoveryRoots
+        }
+        while (!state.roots[index].pending.isEmpty || !streams.isEmpty), !Task.isCancelled {
+            let url: URL
+            if let pending = state.roots[index].pending.last { url = pending }
+            else {
+                let cursorIndex = state.roots[index].directoriesInProgress.count - 1
+                let stream = streams[cursorIndex]
+                if state.roots[index].directoriesInProgress[cursorIndex].pendingEntry == nil {
+                    do {
+                        guard let name = try autoreleasepool(invoking: { try stream.nextName() }) else {
+                            try stream.verifyUnchanged()
+                            try stream.close()
+                            streams.removeLast()
+                            state.roots[index].directoriesInProgress.removeLast()
+                            continue
+                        }
+                        state.roots[index].directoriesInProgress[cursorIndex].pendingEntry = name
+                        state.peakPending = max(state.peakPending ?? 0, state.pendingCount)
+                        segmentPeak = max(segmentPeak, state.pendingCount)
+                    } catch is CancellationError { break }
+                    catch {
+                        state.roots[index].issues.append(discoveryIssue(url: stream.directory, error: error))
+                        try stream.close()
+                        streams.removeLast()
+                        state.roots[index].directoriesInProgress.removeLast()
+                        continue
+                    }
+                }
+                guard let name = state.roots[index].directoriesInProgress[cursorIndex].pendingEntry else { throw ManualToolError(message: "Directory traversal lost the pending entry for \(stream.directory.path).") }
+                url = autoreleasepool { stream.directory.appendingPathComponent(name, isDirectory: false) }
+            }
+            var inspectedRegular = false
+            var openedDirectory: DiscoveryDirectoryStream? = nil
             do {
-                try requireDiscoveryVolume(url: url, allowedNetworkRoots: state.plan.allowedNetworkRoots)
-                let file = try materializedFileState(url)
+                try Task.checkCancellation()
+                // Foundation path/volume bridges create temporary objects on this long-lived worker.
+                let file = try autoreleasepool {
+                    try requireDiscoveryScope(url: url, allowedNetworkRoots: state.plan.allowedNetworkRoots, exclusions: exclusions)
+                    return try materializedFileState(url)
+                }
                 if file.directory {
                     if let first = state.visited[file.identity] {
-                        state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .excluded, reason: "Directory already traversed at \(first); avoids duplicate traversal and link cycles."))
-                        state.roots[index].pending.removeLast()
+                        let owner = state.visitedRootIndices?[file.identity].map { state.roots[$0].root }
+                        let reference = DiscoveryDirectoryReference(directory: URL(fileURLWithPath: first), identity: file.identity, root: owner)
+                        state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .excluded,
+                            reason: "Directory uses the measured location below; it is not traversed again. That location's pending work and gaps still apply.",
+                            directoryReference: reference))
+                    } else if streams.count >= maximumDiscoveryDirectoryDepth {
+                        state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .unsupported, reason: "Directory depth exceeds the bounded \(maximumDiscoveryDirectoryDepth)-stream traversal limit; this subtree was not inspected."))
                     } else {
-                        let children = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [])
+                        openedDirectory = try DiscoveryDirectoryStream(directory: url, expectedIdentity: file.identity, allowedNetworkRoots: state.plan.allowedNetworkRoots)
                         state.visited[file.identity] = url.path
+                        if state.visitedRootIndices == nil { state.visitedRootIndices = [:] }
+                        state.visitedRootIndices?[file.identity] = index
                         state.roots[index].directories += 1
-                        state.roots[index].pending.removeLast()
-                        state.roots[index].pending += children.map { url.appendingPathComponent($0.lastPathComponent) }.sorted { $0.path > $1.path }
                     }
                 } else {
                     if file.regular {
+                        inspectedRegular = true
                         let page: ManualPage?
                         if let old = cached[url.path], old.problem == nil || old.indexed,
                            old.locations.first(where: { $0.source == url })?.stamp == "direct:" + file.stamp {
@@ -209,39 +432,64 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
                             reused.locations = [ManualLocation(source: url, root: root, name: old.name, section: old.section, language: old.language, stamp: "direct:" + file.stamp)]
                             page = reused.at(reused.locations[0])
                         } else {
-                            page = try await discoveredManual(file: url, root: root, state: file, allowedNetworkRoots: state.plan.allowedNetworkRoots)
+                            page = try await discoveredManual(file: url, root: root, state: file, allowedNetworkRoots: state.plan.allowedNetworkRoots, exclusions: exclusions)
                         }
                         if let page {
                             state.pages.append(page)
                             state.roots[index].manuals += 1
                             if let problem = page.problem, !page.indexed { state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .unsupported, reason: problem)) }
                         }
-                        state.roots[index].files += 1
                     } else {
                         state.roots[index].issues.append(DiscoveryIssue(path: url.path, kind: .excluded, reason: "Special filesystem entry; sockets, devices and pipes are never read."))
                     }
-                    state.roots[index].pending.removeLast()
                 }
             } catch is CancellationError { break }
             catch {
                 state.roots[index].issues.append(discoveryIssue(url: url, error: error))
-                state.roots[index].pending.removeLast()
             }
-            if Date().timeIntervalSince(lastProgress) > 0.15 {
+            if !state.roots[index].pending.isEmpty { state.roots[index].pending.removeLast() }
+            else {
+                let cursorIndex = state.roots[index].directoriesInProgress.count - 1
+                guard let name = state.roots[index].directoriesInProgress[cursorIndex].pendingEntry else { throw ManualToolError(message: "Directory traversal lost the committed entry at \(url.path).") }
+                streams[cursorIndex].commit(name)
+                state.roots[index].directoriesInProgress[cursorIndex].consumedEntries += 1
+                state.roots[index].directoriesInProgress[cursorIndex].pendingEntry = nil
+            }
+            if let stream = openedDirectory {
+                state.roots[index].directoriesInProgress.append(DiscoveryDirectoryCursor(directory: url, metadata: stream.metadata,
+                    consumedEntries: 0, prefixDigest: stream.digest, pendingEntry: nil))
+                streams.append(stream)
+            }
+            if inspectedRegular { state.roots[index].files += 1 }
+            state.peakPending = max(state.peakPending ?? 0, state.pendingCount)
+            segmentPeak = max(segmentPeak, state.pendingCount)
+            let now = ProcessInfo.processInfo.systemUptime
+            let files = state.roots.reduce(0) { $0 + $1.files }
+            if now - lastProgress > 0.15 || (reportedFiles == 0 && files > 0) {
                 await progress(DiscoveryProgress(path: url.path, directories: state.roots.reduce(0) { $0 + $1.directories },
-                                                  files: state.roots.reduce(0) { $0 + $1.files }, manuals: state.pages.count))
-                lastProgress = Date()
+                                                  files: state.roots.reduce(0) { $0 + $1.files }, manuals: state.pages.count,
+                                                  pending: state.pendingCount, peakPending: segmentPeak))
+                lastProgress = now
+                reportedFiles = files
             }
-            if Date().timeIntervalSince(lastSave) > 5 {
+            if now - lastSave > 5 {
+                for (cursorIndex, stream) in streams.enumerated() { state.roots[index].directoriesInProgress[cursorIndex].prefixDigest = stream.digest }
                 state.updated = Date()
                 try await save(state)
-                lastSave = Date()
+                lastSave = ProcessInfo.processInfo.systemUptime
             }
+        }
+        for (cursorIndex, stream) in streams.enumerated() {
+            state.roots[index].directoriesInProgress[cursorIndex].prefixDigest = stream.digest
+            try stream.close()
         }
         if Task.isCancelled { break }
     }
     state.updated = Date()
     try await save(state)
+    await progress(DiscoveryProgress(path: "Discovery stopped", directories: state.roots.reduce(0) { $0 + $1.directories },
+        files: state.roots.reduce(0) { $0 + $1.files }, manuals: state.pages.count, pending: state.pendingCount,
+        peakPending: segmentPeak))
     return state.snapshot
 }
 

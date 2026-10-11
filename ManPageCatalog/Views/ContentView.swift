@@ -11,6 +11,13 @@ struct ContentView: View {
     @State private var searchFocusRequest = UUID()
 
     var body: some View {
+        VStack(spacing: 0) {
+            catalogContent
+            statusBar
+        }.frame(minWidth: 960, minHeight: 600)
+    }
+
+    private var catalogContent: some View {
         NavigationSplitView {
             List(selection: $library.section) {
                 Label("All Manuals", systemImage: "books.vertical").tag(Optional<String>.none).accessibilityIdentifier("sectionAll")
@@ -26,6 +33,12 @@ struct ContentView: View {
                         .accessibilityIdentifier("showSources")
                     Text("\(library.pages.count) manuals\n\(library.indexedCount) indexed manuals")
                         .font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("libraryIndexSummary")
+                        .background {
+                            if InteractionDiagnostics.isEnabled {
+                                InteractionViewProbe(operation: .indexingProgress, generation: library.indexingProgressGeneration).frame(width: 0, height: 0)
+                            }
+                        }
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             }
         } content: {
@@ -44,23 +57,18 @@ struct ContentView: View {
                     }.labelsHidden().accessibilityLabel("Source filter").accessibilityIdentifier("sourceFilter")
                     Toggle("Include full text", isOn: $library.fullText).toggleStyle(.checkbox).accessibilityIdentifier("fullTextSearch")
                     if library.fullText { Text("Covers \(library.indexedCount) of \(library.pages.count) indexed manuals").font(.caption).foregroundStyle(.secondary) }
-                    Text("\(library.results.count) results").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("resultCount")
+                    Text("\(library.results.count) results").font(.caption).foregroundStyle(.secondary)
+                        .accessibilityElement(children: .ignore).accessibilityLabel("\(library.results.count) results")
+                        .accessibilityIdentifier("resultCount")
+                        .background {
+                            if InteractionDiagnostics.isEnabled {
+                                InteractionViewProbe(operation: .search, generation: library.resultsGeneration).frame(width: 0, height: 0)
+                            }
+                        }
                 }.padding(12).background(.bar)
                 Divider()
-                List(Array(library.results.prefix(1000)), selection: $selectedID) { result in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(result.page.title).font(.system(.body, design: .monospaced)).fontWeight(.semibold)
-                        Text(result.page.description.isEmpty ? (result.page.problem != nil ? "Description unavailable — see Sources" : result.page.indexed ? "No description in this manual" : "Description not indexed yet") : result.page.description)
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        Text("\(result.page.locations.count) source \(result.page.locations.count == 1 ? "location" : "locations")\(result.reason.isEmpty ? "" : " • " + result.reason)")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        if result.page.language != "unspecified" {
-                            Text("Language: \(result.page.language)").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }.padding(.vertical, 4).tag(result.page.id)
-                        .accessibilityElement(children: .combine)
-                        .accessibilityIdentifier("result-\(result.page.source.path)")
-                }.accessibilityIdentifier("searchResults")
+                ManualResultsList(results: Array(library.results.prefix(1000)), selectedID: selectedID, selection: $selectedID)
+                    .equatable()
                 .overlay {
                     if library.results.isEmpty {
                         VStack(spacing: 10) {
@@ -78,10 +86,17 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 if !linkMessage.isEmpty { Text(linkMessage).font(.caption).padding(8).accessibilityIdentifier("referenceStatus") }
                 VStack(spacing: 0) {
-                    ManualDetailView(reader: reader).frame(minHeight: 220, maxHeight: .infinity)
                     if terminal.expanded {
-                        Divider()
-                        TerminalPane(session: terminal).frame(height: terminal.view == nil ? 320 : 460)
+                        if terminal.maximized {
+                            TerminalPane(session: terminal)
+                        } else {
+                            VSplitView {
+                                ManualDetailView(reader: reader).frame(minHeight: 180, idealHeight: 300, maxHeight: .infinity)
+                                TerminalPane(session: terminal).frame(minHeight: 320, idealHeight: 520, maxHeight: .infinity)
+                            }
+                        }
+                    } else {
+                        ManualDetailView(reader: reader).frame(minHeight: 220, maxHeight: .infinity)
                     }
                 }
             }
@@ -96,12 +111,16 @@ struct ContentView: View {
             }
             ToolbarItem {
                 GlobalSearchField(text: $library.query, focusRequest: searchFocusRequest) {
-                    Task { if let page = await library.firstResultForCurrentSearch() { open(page) } }
-                }.frame(minWidth: 240, idealWidth: 320, maxWidth: 420)
+                    InteractionDiagnostics.readerInput(window: reader.webView.window)
+                    Task {
+                        if let page = await library.firstResultForCurrentSearch() { open(page) }
+                        else { InteractionDiagnostics.readerInputCancelled() }
+                    }
+                }.frame(minWidth: 160, idealWidth: 220, maxWidth: 280)
             }
-            ToolbarItem {
+            ToolbarItem(placement: .primaryAction) {
                 Button { terminal.expanded.toggle() } label: {
-                    Label(terminal.active ? "Terminal • Running" : "Commands", systemImage: "terminal")
+                    Label(terminal.active ? "Terminal • Running" : "Terminal", systemImage: "terminal").labelStyle(.titleAndIcon)
                 }.accessibilityIdentifier("toggleTerminalPane").keyboardShortcut("j", modifiers: .command)
             }
             ToolbarItem {
@@ -109,18 +128,16 @@ struct ContentView: View {
                     .accessibilityIdentifier("manageSources")
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Text(library.errorMessage ?? library.status).lineLimit(2).textSelection(.enabled).accessibilityIdentifier("libraryStatus").accessibilityValue(library.errorMessage ?? library.status)
-                Spacer()
-                if library.isIndexing { Button(library.phase == .discovering ? "Pause Scan" : "Pause Indexing") { library.stop() }.accessibilityIdentifier("stopIndexing") }
-            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 6).background(.bar)
-        }
         .task {
             reader.onReference = { name, section in followReference(name: name, section: section) }
             library.openLibrary()
         }
-        .onChange(of: selectedID) { id in if let page = library.results.first(where: { $0.id == id })?.page { open(page) } }
+        .onChange(of: selectedID) { id in
+            if let page = library.results.first(where: { $0.id == id })?.page {
+                InteractionDiagnostics.readerInput(window: reader.webView.window)
+                open(page)
+            }
+        }
         .onChange(of: library.pages.count) { count in
             if count > 0, let reference = pendingReference {
                 pendingReference = nil
@@ -145,7 +162,18 @@ struct ContentView: View {
                let section = parts.queryItems?.first(where: { $0.name == "section" })?.value { followReference(name: name, section: section) }
             else { library.searchAll(); library.query = parts.queryItems?.first(where: { $0.name == "query" })?.value ?? url.host ?? ""; searchFocusRequest = UUID() }
         }
-        .frame(minWidth: 1060, minHeight: terminal.expanded ? 820 : 650)
+    }
+
+    private var statusBar: some View {
+        HStack {
+            Text(library.errorMessage ?? library.status).lineLimit(2).textSelection(.enabled).accessibilityIdentifier("libraryStatus").accessibilityValue(library.errorMessage ?? library.status)
+            Spacer()
+            if terminal.active {
+                Button("Show Running Terminal") { terminal.expanded = true }
+                    .accessibilityIdentifier("showRunningTerminal")
+            }
+            if library.isIndexing { Button(library.phase == .discovering ? "Pause Scan" : "Pause Indexing") { library.stop() }.accessibilityIdentifier("stopIndexing") }
+        }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 6).background(.bar)
     }
 
     private func open(_ page: ManualPage) {
@@ -171,5 +199,33 @@ struct ContentView: View {
     private func restore(_ context: BrowseContext) {
         library.query = context.query; library.section = context.section; library.root = context.root; library.fullText = context.fullText
         linkMessage = ""
+    }
+}
+
+/// Progress publications should not invalidate an unchanged, potentially thousand-row result list.
+private struct ManualResultsList: View, Equatable {
+    let results: [ManualSearchResult]
+    let selectedID: String?
+    @Binding var selection: String?
+
+    static func == (left: ManualResultsList, right: ManualResultsList) -> Bool {
+        left.selectedID == right.selectedID && left.results == right.results
+    }
+
+    var body: some View {
+        List(results, selection: $selection) { result in
+            VStack(alignment: .leading, spacing: 4) {
+                Text(result.page.title).font(.system(.body, design: .monospaced)).fontWeight(.semibold)
+                Text(result.page.description.isEmpty ? (result.page.problem != nil ? "Description unavailable — see Sources" : result.page.indexed ? "No description in this manual" : "Description not indexed yet") : result.page.description)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Text("\(result.page.locations.count) source \(result.page.locations.count == 1 ? "location" : "locations")\(result.reason.isEmpty ? "" : " • " + result.reason)")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                if result.page.language != "unspecified" {
+                    Text("Language: \(result.page.language)").font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(.vertical, 4).tag(result.page.id)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("result-\(result.page.source.path)")
+        }.accessibilityIdentifier("searchResults")
     }
 }
