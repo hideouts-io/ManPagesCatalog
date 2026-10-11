@@ -3,6 +3,71 @@ import Darwin
 @testable import Man_Page_Catalog
 
 final class IndexingIntegrationTests: XCTestCase {
+    @MainActor
+    func testCancelledFixtureCleanupPreservesFilesUntilItsOwnerReleases() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("IndexCleanupCancellation-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let marker = directory.appendingPathComponent("retained-marker")
+        let retained = Data("preserve owned fixture\n".utf8)
+        try retained.write(to: marker)
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            if FileManager.default.fileExists(atPath: directory.path) { try await fixture.remove() }
+        }
+        try await verifyCancelledCleanup(directory: directory, fixture: fixture)
+        XCTAssertEqual(try Data(contentsOf: marker), retained)
+        try await fixture.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    @MainActor
+    private func verifyCancelledCleanup(directory: URL, fixture: LibraryFixtureCleanup) async throws {
+        let suite = "IndexCleanupCancellation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = LibraryStore(directory: directory, defaults: defaults)
+        fixture.track(store)
+        let removal = Task { try await fixture.remove() }
+        removal.cancel()
+        do {
+            try await removal.value
+            XCTFail("Cancelled cleanup must preserve files while an owner is retained.")
+        } catch is CancellationError {
+            XCTAssertFalse(store.isIndexing)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("search.sqlite").path),
+            "Owner retirement must guard deletion even before a database connection exists.")
+    }
+
+    func testLibraryFixtureRemovalRefusesAnOpenSQLiteConnection() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("IndexResourceLifetime-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        addTeardownBlock { () async throws -> Void in
+            if FileManager.default.fileExists(atPath: directory.path) {
+                try removeClosedLibraryFixture(at: directory)
+            }
+        }
+        try await verifyOpenFixtureRefusal(directory: directory)
+        try removeClosedLibraryFixture(at: directory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    private func verifyOpenFixtureRefusal(directory: URL) async throws {
+        let database = directory.appendingPathComponent("search.sqlite")
+        let index = try ManualSearchIndex(url: database)
+        let metadata = try await index.metadata()
+        XCTAssertTrue(metadata.isEmpty)
+        let before = try Data(contentsOf: database)
+        try withExtendedLifetime(index) {
+            XCTAssertThrowsError(try removeClosedLibraryFixture(at: directory)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("open files"), error.localizedDescription)
+                XCTAssertTrue(error.localizedDescription.contains(database.lastPathComponent), error.localizedDescription)
+            }
+            XCTAssertEqual(try Data(contentsOf: database), before, "Refusing removal must preserve exact database bytes.")
+        }
+    }
+
     func testLocalInteractionDiagnosticsAppendAndSymlinkRejection() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ManualInteractionOutput-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -63,13 +128,15 @@ final class IndexingIntegrationTests: XCTestCase {
         let suite = "ManualIndexing.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.set([root.path], forKey: "manualRoots")
-        defer {
-            defaults.removePersistentDomain(forName: suite)
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot remove owned indexing integration files: \(error)") }
         }
         let output = directory.appendingPathComponent("library")
         let first = LibraryStore(directory: output, defaults: defaults)
+        fixture.track(first)
         first.scanSelectedRoots()
         for _ in 0..<4000 {
             if first.indexCompleted >= 64 { break }
@@ -90,6 +157,7 @@ final class IndexingIntegrationTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(durable, 64)
         XCTAssertLessThan(durable, 132)
         let reopened = LibraryStore(directory: output, defaults: defaults)
+        fixture.track(reopened)
         reopened.continueIndexing()
         try await waitForIndexing(reopened)
         XCTAssertNil(reopened.errorMessage)
@@ -143,9 +211,10 @@ final class IndexingIntegrationTests: XCTestCase {
         try bytes.write(to: inventory, options: .atomic)
         let suite = "ManualIndexDuplicate.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer {
-            defaults.removePersistentDomain(forName: suite)
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot remove owned duplicate-inventory integration files: \(error)") }
         }
         XCTAssertThrowsError(try loadDiscovery(inventory)) { error in
@@ -153,6 +222,7 @@ final class IndexingIntegrationTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("duplicate grouped manual ID"))
         }
         let store = LibraryStore(directory: output, defaults: defaults)
+        fixture.track(store)
         store.continueIndexing()
         try await waitForIndexing(store)
         XCTAssertEqual(store.phase, .needsAttention)
@@ -175,12 +245,14 @@ final class IndexingIntegrationTests: XCTestCase {
         try (Data(contentsOf: source) + Data("\n.Sh CHANGED VERSION\nchangedindexversion\n".utf8)).write(to: source)
         let suite = "ManualIndexVersion.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer {
-            defaults.removePersistentDomain(forName: suite)
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot remove owned version integration files: \(error)") }
         }
         let store = LibraryStore(directory: output, defaults: defaults)
+        fixture.track(store)
         store.continueIndexing()
         try await waitForIndexing(store)
         XCTAssertEqual(store.pages.first?.id, original.id)
@@ -203,13 +275,15 @@ final class IndexingIntegrationTests: XCTestCase {
         defaults.set([root.path], forKey: "manualRoots")
         let output = directory.appendingPathComponent("library")
         let database = output.appendingPathComponent("search.sqlite")
-        defer {
-            defaults.removePersistentDomain(forName: suite)
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
             if chmod(database.path, 0o600) != 0 { XCTFail("Cannot restore owned index permissions: errno \(errno)") }
-            do { try FileManager.default.removeItem(at: directory) }
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot remove owned read-only integration files: \(error)") }
         }
         let initial = LibraryStore(directory: output, defaults: defaults)
+        fixture.track(initial)
         initial.scanSelectedRoots()
         try await waitForIndexing(initial)
         XCTAssertEqual(initial.indexedCount, 1)
@@ -217,6 +291,7 @@ final class IndexingIntegrationTests: XCTestCase {
         guard chmod(database.path, 0o444) == 0 else { throw ManualToolError(message: "Cannot set owned index read-only: errno \(errno).") }
         XCTAssertNotEqual(access(database.path, W_OK), 0, "Verify actual write denial under this identity.")
         let reopened = LibraryStore(directory: output, defaults: defaults)
+        fixture.track(reopened)
         reopened.continueIndexing()
         try await waitForIndexing(reopened)
         XCTAssertEqual(reopened.phase, .needsAttention)
@@ -234,5 +309,59 @@ final class IndexingIntegrationTests: XCTestCase {
     private func waitForIndexing(_ store: LibraryStore) async throws {
         for _ in 0..<4000 where store.isIndexing { try await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertFalse(store.isIndexing, store.errorMessage ?? store.status)
+    }
+}
+
+/// Refuses to unlink an owned fixture while this process still has a regular file open beneath it.
+func removeClosedLibraryFixture(at directory: URL) throws {
+    let prefix = directory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+    var retained: [String] = []
+    for descriptor: Int32 in 0..<getdtablesize() {
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0 else {
+            if errno == EBADF { continue }
+            throw ManualToolError(message: "Cannot inspect fixture file descriptor \(descriptor): errno \(errno). The owned library remains at \(directory.path).")
+        }
+        guard metadata.st_mode & S_IFMT == S_IFREG else { continue }
+        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(descriptor, F_GETPATH, &path) == 0 else {
+            if errno == EBADF { continue }
+            throw ManualToolError(message: "Cannot resolve fixture file descriptor \(descriptor): errno \(errno). The owned library remains at \(directory.path).")
+        }
+        let resolved = URL(fileURLWithPath: String(cString: path)).resolvingSymlinksInPath().standardizedFileURL.path
+        if resolved.hasPrefix(prefix) { retained.append("\(descriptor): \(resolved)") }
+    }
+    guard retained.isEmpty else {
+        throw ManualToolError(message: "Refusing to remove the owned library with open files: \(retained.prefix(10).joined(separator: "; ")). Release its owners before removing \(directory.path).")
+    }
+    try FileManager.default.removeItem(at: directory)
+}
+
+private struct LibraryFixtureOwner {
+    weak var store: LibraryStore?
+}
+
+/// Coordinates test-owned filesystem cleanup; any retirement or descriptor failure prevents deletion.
+@MainActor
+final class LibraryFixtureCleanup {
+    private let directory: URL
+    private var owners: [LibraryFixtureOwner] = []
+
+    init(directory: URL) { self.directory = directory }
+
+    func track(_ store: LibraryStore) {
+        owners.append(LibraryFixtureOwner(store: store))
+    }
+
+    func remove() async throws {
+        for owner in owners { owner.store?.stop() }
+        let deadline = ProcessInfo.processInfo.systemUptime + 30
+        while owners.contains(where: { $0.store != nil }) {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw ManualToolError(message: "The owned library still has an active owner after stopping its work. Preserve \(directory.path) and inspect its unfinished search or indexing tasks.")
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try removeClosedLibraryFixture(at: directory)
     }
 }

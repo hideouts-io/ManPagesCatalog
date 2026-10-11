@@ -7,8 +7,9 @@ final class NativeBrowserIntegrationTests: XCTestCase {
     func testDiscoveryAliasesCompressionAndFTSSearch() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NativeManuals-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = await LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot clean test collection: \(error)") }
         }
         let first = directory.appendingPathComponent("first")
@@ -144,12 +145,14 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"), to: source)
         let suite = "LibraryTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer {
-            defaults.removePersistentDomain(forName: suite)
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot clean library test: \(error)") }
         }
         let library = LibraryStore(directory: directory.appendingPathComponent("index"), defaults: defaults)
+        fixture.track(library)
         library.addRoot(root)
         library.stop()
         library.scan()

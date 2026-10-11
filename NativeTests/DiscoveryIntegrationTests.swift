@@ -412,12 +412,14 @@ final class DiscoveryIntegrationTests: XCTestCase {
         let suite = "DiscoveryStore.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.set([root.path], forKey: "manualRoots")
-        defer {
-            defaults.removePersistentDomain(forName: suite)
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot remove discovery store integration files: \(error)") }
         }
         let store = LibraryStore(directory: directory.appendingPathComponent("index"), defaults: defaults)
+        fixture.track(store)
         store.scanSelectedRoots()
         try await finished(store)
         let first = try XCTUnwrap(store.pages.first)
@@ -441,6 +443,7 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertEqual(try loadScanPerformance(companion).scanID, store.performanceReport?.scanID)
 
         let unmeasured = LibraryStore(directory: directory.appendingPathComponent("unmeasured"), defaults: defaults)
+        fixture.track(unmeasured)
         XCTAssertThrowsError(try unmeasured.exportCoverage(to: export)) { error in
             XCTAssertTrue(error.localizedDescription.contains("no measured scan diagnostics"))
             XCTAssertTrue(error.localizedDescription.contains("Neither output file was changed"))
@@ -546,6 +549,7 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertEqual(store.sourceRoots, [root.path])
         try FileManager.default.moveItem(at: moved, to: root)
         let reopened = LibraryStore(directory: directory.appendingPathComponent("index"), defaults: defaults)
+        fixture.track(reopened)
         reopened.scanSelectedRoots()
         try await finished(reopened)
         XCTAssertEqual(reopened.pages.first?.id, first.id)
@@ -585,13 +589,15 @@ final class DiscoveryIntegrationTests: XCTestCase {
         let suite = "DiscoveryLegacy.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.set([root.path], forKey: "manualRoots")
-        defer {
-            defaults.removePersistentDomain(forName: suite)
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot remove legacy-checkpoint integration files: \(error)") }
         }
         let library = directory.appendingPathComponent("index")
         let store = LibraryStore(directory: library, defaults: defaults)
+        fixture.track(store)
         store.scanSelectedRoots()
         try await finished(store)
         let page = try XCTUnwrap(store.pages.first)
@@ -612,6 +618,7 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertEqual(legacy.count, checkpoint.count)
         try legacy.write(to: checkpointURL, options: .atomic)
         let reopened = LibraryStore(directory: library, defaults: defaults)
+        fixture.track(reopened)
         reopened.openLibrary()
         for _ in 0..<1000 {
             if reopened.errorMessage != nil { break }
@@ -634,8 +641,9 @@ final class DiscoveryIntegrationTests: XCTestCase {
     func testDurablePauseResumeAndStaleCheckpointIsolation() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryResume-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = await LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot remove resume integration files: \(error)") }
         }
         let url = directory.appendingPathComponent("scan-checkpoint-v1.json")
@@ -698,6 +706,7 @@ final class DiscoveryIntegrationTests: XCTestCase {
         try JSONEncoder().encode(partial).write(to: directory.appendingPathComponent("discovery-v1.json"))
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "DiscoveryResume.\(UUID().uuidString)"))
         let store = await LibraryStore(directory: directory, defaults: defaults)
+        await fixture.track(store)
         await store.openLibrary()
         for _ in 0..<1000 {
             if await store.resumableScan { break }

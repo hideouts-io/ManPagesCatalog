@@ -24,17 +24,19 @@ final class SearchRefreshIntegrationTests: XCTestCase {
         try JSONEncoder().encode(scan).write(to: output.appendingPathComponent("discovery-v1.json"), options: .atomic)
         let suite = "SearchRefresh.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer {
-            defaults.removePersistentDomain(forName: suite)
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot remove owned search-refresh integration files: \(error)") }
         }
-        try await verifyActiveFullTextRefresh(directory: output, defaults: defaults)
+        try await verifyActiveFullTextRefresh(directory: output, defaults: defaults, fixture: fixture)
     }
 
     @MainActor
-    private func verifyActiveFullTextRefresh(directory: URL, defaults: UserDefaults) async throws {
+    private func verifyActiveFullTextRefresh(directory: URL, defaults: UserDefaults, fixture: LibraryFixtureCleanup) async throws {
         let store = LibraryStore(directory: directory, defaults: defaults)
+        fixture.track(store)
         store.continueIndexing()
         do {
             let publicationDeadline = ProcessInfo.processInfo.systemUptime + 30
