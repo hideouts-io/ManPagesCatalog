@@ -11,11 +11,11 @@
 ![Reader](https://img.shields.io/badge/reader-native%20HTML-0969da)
 ![Search](https://img.shields.io/badge/search-local%20SQLite%20FTS5-003B57)
 
-ManPagesCatalog brings the documentation already installed on your Mac into one searchable window. Find a command by name or topic, read its original manual with selectable text and linked references, check where it came from, and export a PDF when you need a portable copy. Developers can prepare an attributed command draft or open an embedded terminal alongside the documentation.
+ManPagesCatalog brings the documentation already installed on your Mac into one searchable window. Find a command by name or topic, read its original manual with selectable text and linked references, check where it came from, and export a PDF when you need a portable copy. Use the guided command builder to choose an action, fill in inputs, review the exact command, and explicitly run it beside the documentation.
 
 > **Scope:** Discovery, search, reading, and command preparation never execute a documented command. Running a draft or starting an interactive shell is a separate, explicit action on your real Mac. Deep Scan reports what it inspected and what it could not inspect; a completed traversal is not a guarantee that every manual on the machine was found.
 
-This README describes the native [`v2.0.0-beta.1` prerelease](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v2.0.0-beta.1) and the matching ZIP tracked with this source. The older [`v1.0.0` release](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v1.0.0), dated March 29, 2026, contains the earlier PDF-generation app and its external dependencies.
+The native [`v2.0.0-beta.1` prerelease](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v2.0.0-beta.1) and tracked ZIP are the published snapshot. This README also describes subsequent source improvements; build the current source to use them. The older [`v1.0.0` release](https://github.com/hideouts-io/ManPagesCatalog/releases/tag/v1.0.0), dated March 29, 2026, contains the earlier PDF-generation app and its external dependencies.
 
 ## Contents
 
@@ -64,7 +64,7 @@ These are captures of the packaged native app using an isolated library limited 
 | **Resumable discovery** | Pause, keep usable results, reopen the app, and resume queued locations. | Checkpoints require the same boot and a stable clock. |
 | **Source provenance** | Inspect manual paths, identical-content locations, aliases, languages, and distinct versions. | A command found on PATH is not proof that its version matches the manual. |
 | **PDF export** | Save one paginated, selectable PDF from its original source. | Unsupported or erroneous formatting is reported; exports are not silently substituted. |
-| **Command Workspace** | Prepare and review a draft, choose its working folder, copy it, or explicitly run it in a fresh terminal session. | Runs with your Mac’s permissions; it is not an isolated practice environment. |
+| **Command Workspace** | Build documented actions for macOS `ls`, `du`, and `diskutil`, choose optional arguments, review a verified executable path, and explicitly run in a fresh terminal session. Editable drafts remain available for other commands. | Runs with your Mac’s permissions; manual provenance and executable-version compatibility are independent. |
 | **Native presentation** | Use keyboard shortcuts, descriptive controls, System/Light/Dark appearance, and the book/terminal branding. | Full VoiceOver and minimum-window validation remain on the roadmap. |
 
 ## Requirements and installation
@@ -119,6 +119,12 @@ Deep Scan does not use sudo, bypass macOS permissions, or automatically download
 
 Use **Pause Scan** to save pending traversal, **Resume Discovery** to continue it, or **Index Discovered Manuals** when discovered manuals still need metadata. Pausing indexing preserves the indexed work already completed. A new Standard or Deep Scan replaces the pending traversal checkpoint.
 
+Indexing formats at most four manuals concurrently and commits their text atomically in batches. Metadata publication is coalesced; Return-to-open follows a refresh of the same search while rejecting a changed query or scope. Resuming reconciles committed index records with the retained inventory, avoiding repeated formatting after interrupted metadata saving. A changed source requires rediscovery before indexing under its old identity. Storage failures stop indexing with a specific error while retaining usable catalog data.
+
+Discovery streams folder entries instead of storing a whole directory listing. Pending-work counts represent unfinished folders and interrupted entries; their unseen children are not counted. At most 128 directory streams are open. Deeper folders, union-mounted subtrees and folders with unsupported entry names produce explicit coverage gaps.
+
+Version-2 checkpoints reopen unfinished folders and verify their identity, entry modification time and consumed entry order before continuing. Status timestamps are retained for diagnostics; metadata-only changes do not invalidate an unchanged directory. A changed folder or a version-1 checkpoint requires a fresh scan; the existing inventory and checkpoint stay intact until you choose one. Resume is limited to the same boot and a stable wall clock, and does not recheck file contents already consumed. New checkpoints identify a continuous clock that includes sleep, so sleeping does not shift their boot estimate. Legacy checkpoints retain their awake-time clock interpretation; sleep can invalidate that estimate and require a fresh scan. They are never silently relabeled. Native filesystem order can change which directory alias is traversed first. New checkpoints retain the actual coverage root that opened each directory; older checkpoints leave missing ownership unknown until a fresh scan.
+
 Checkpoints are saved atomically about every five seconds between file operations and when paused. They are traversal snapshots, not filesystem change journals. After a reboot or a significant clock change, start a fresh scan. Filesystem changes made after a folder was visited may require a new scan even during the same boot.
 
 A failed or cancelled scan preserves usable catalog entries and partial discoveries. Stale asynchronous results cannot replace a newer operation. Successful rescans can remove deleted entries from covered locations; a Standard Scan preserves earlier Deep Scan results outside its covered roots. **⌘R** performs an incremental Standard Scan, reusing unchanged source metadata and indexed content. It does not continuously monitor the filesystem or generate PDFs.
@@ -134,13 +140,13 @@ A failed or cancelled scan preserves usable catalog entries and partial discover
 | **Failed** | An operation could not inspect or process a location; the report includes the reason. |
 | **Unsupported** | A candidate was recognized but the current reader/decoder could not handle it. |
 
-**Export Coverage…** writes the recorded per-root counters and every issue to JSON. Large on-screen issue groups show the first 100 entries. Manual indexing/formatting diagnostics appear in their own group. “Traversal finished” and “indexed” do not mean that every manual on the Mac was found or rendered perfectly.
+**Export Coverage…** saves the recorded per-root counters and every issue to a JSON file, together with a named `.performance.json` report for the retained scan. Choose a writable local folder in the native Save sheet. Cancelling creates neither output. Both reports are prepared before replacement; conflicts and write failures name the affected paths and report preservation or restoration results. Existing destinations must be ordinary materialized files of at most 64 MiB each; choose new filenames for larger files. Each replacement is atomic, but an abrupt interruption between the two replacements can leave an unmatched pair. Large on-screen issue groups show the first 100 entries. Manual indexing/formatting diagnostics appear in their own group. “Traversal finished” and “indexed” do not mean that every manual on the Mac was found or rendered perfectly.
 
 ### Formats, aliases, and versions
 
 Discovery validates roff/man/mdoc and Tcl/Tk `.HS` headers instead of accepting filenames alone. It recognizes numbered and extended sections, locale directories, file symlinks, gzip, Unix compress (`.Z`), bzip2, and whole-file `.so` aliases with compressed targets. Compression signatures also identify renamed containers.
 
-Resolved content is fingerprinted with SHA-256 and grouped by section and language. Identical content retains its encountered file locations and searchable aliases; different content remains a separate result. Directory identity prevents repeated traversal and symlink loops. Alternate directory aliases are reported against the first traversed path rather than expanded into every equivalent pathname.
+Resolved content is fingerprinted with SHA-256 and grouped by section and language. Identical content retains its encountered file locations and searchable aliases; different content remains a separate result. Directory identity prevents repeated traversal and symlink loops. An encountered alternate directory path has a typed coverage reference to the first opened path and its actual coverage root, displayed under **Measured coverage** and retained in exported JSON. That canonical record's pending work and gaps still apply to the alias. Descendant manual paths are not invented or counted twice. Older records without root ownership remain explicit; a fresh scan establishes that provenance and reconciles retargeted aliases.
 
 Current input boundaries include:
 
@@ -188,23 +194,23 @@ The executable path is resolved independently from the app’s PATH. A manual ca
 
 ### PDF export and copying
 
-**Export PDF** formats the original source into a paginated, selectable PDF through the native Save dialog. It does not capture the HTML viewport or bulk-render the catalog. A failed export reports the formatting error and leaves an existing destination unchanged.
+**Export PDF** formats the original source into a paginated, selectable PDF through a Save sheet attached to the reading window. Other app windows remain available. Cancelling does not start PDF generation. A failed export reports the destination and formatting error and leaves an existing destination unchanged.
 
-The **Copy** menu can copy a command name or selected text. **Copy & Open Terminal** copies the quoted command name and opens Terminal.app; you paste it yourself. It does not insert or execute the command.
+The **Copy** menu can copy a command name or selected text. **Copy & Open Terminal** copies the quoted, verified absolute executable path (or an identified zsh built-in) and opens Terminal.app; you paste it yourself. It does not insert or execute the command.
 
 ## Prepare commands and use the terminal
 
-The optional **Command Workspace** keeps documentation and command preparation together. Press **⌘J** or use the toolbar’s **Commands** control to show it.
+The **Terminal & Command Builder** is a primary workflow beside the manual reader. Choose **Build Command** beside a manual title, press **⌘J**, or use the toolbar's **Terminal** control. Drag the split dividers to resize the reader, preparation area, and live output; the expand button gives the terminal workspace the full detail area. The exact preview, working folder, review acknowledgement, and Run controls stay visible below the preparation area.
 
-1. Choose **Prepare → Prepare Command Name** or select an example and choose **Prepare Selected Example**.
-2. Review the editable draft and its source attribution. Replace placeholders, remove copied prompts, and check every line and quote.
-3. Use **Choose Folder…** to set the next session’s working directory.
-4. Mark the draft reviewed. Editing the text or changing the folder clears that acknowledgement.
-5. Choose **Copy Draft**, or explicitly choose **Run Draft** when you intend to execute it.
+1. Choose **Build Command**. The generated command uses a verified absolute executable path. Shell-context built-ins are identified separately and use `builtin`; no executable path is invented. **Locate Executable…** lets you explicitly select a local executable when the app's PATH does not find it.
+2. For the matching macOS system manuals and executables, choose a guided action: list a folder with `ls`, measure a folder with `du`, or use `diskutil list` / `diskutil info`. Pick optional flags and fill required inputs. The builder explains effects, rejects conflicting options and invalid values, and updates the quoted command preview. Other commands show their target and explain that guided options are unavailable; consult the manual and edit the draft or select an example.
+3. Type an absolute path in **Working folder**, or use **Choose Folder…** to select one. The selected path is shown below the field; an invalid or inaccessible path blocks Run until corrected. Guided folder arguments are separate from the working folder, must be absolute, and are checked for existence and kind. Executables and guided paths are rechecked before copying and Run.
+4. Review every line, input, working folder, and known effect, then mark the command reviewed. Editing text, arguments, action, executable selection, or the working folder clears that acknowledgement. Editing shell text leaves the builder and preserves the entered text exactly; its plain-text editor disables automatic quote, dash, and text substitutions. Replacing an existing draft requires an explicit replacement choice; Cancel preserves it.
+5. Choose **Copy Command**, **Open in Terminal**, or explicitly choose **Run Command**. Open in Terminal copies the exact preview and opens Terminal.app for you to paste; choose the working folder there before running. It does not insert or execute the command.
 
-Preparing text never starts a shell. Common placeholder notation and control characters block Run, but validation cannot identify every placeholder or predict a command’s effects. The reviewed text, including multiple lines, is passed intact to a fresh `/bin/zsh -f -c` session.
+Preparing a draft and using Copy Command never start an embedded terminal session. Selected examples remain exact editable shell drafts. Common placeholder notation and control characters block raw-draft Run, but validation cannot identify every placeholder or predict arbitrary shell effects. Structured builder values are quoted as literal argument words. The reviewed text, including multiple lines, is passed to a fresh `/bin/zsh -f -c` session.
 
-**Start Interactive Shell** opens `/bin/zsh -f -i` in the embedded SwiftTerm terminal. It supports ordinary input, Ctrl-C, Unicode, selection, copy/paste, scrolling, and resizing. Both shell routes skip user startup files and inherit the app’s PATH; personal aliases and shell customizations are not imported. End an existing session before running another draft.
+**Start Interactive Shell** opens `/bin/zsh -f -i` in the embedded SwiftTerm terminal. It supports ordinary input, Ctrl-C, Unicode, selection, copy/paste, scrolling, and resizing. These shells skip the user's ordinary startup files and inherit the app's PATH; zsh can still read `/etc/zshenv`. Personal aliases and shell customizations are not imported. End an existing session before running another draft. **Interrupt** sends Ctrl-C to the foreground program; **Copy Output** copies retained terminal text, preserving field spacing. Completion, failure, interruption, and session exit retain the raw output and exit status. Guided actions explain how to read their results. A running-session indicator remains available while the pane is hidden.
 
 | Action | Session behavior |
 | --- | --- |
@@ -226,7 +232,7 @@ Commands run on the actual Mac with your user permissions. The app does not add 
 | **⌘G** / **⇧⌘G** | Next / previous in-page match |
 | **⌘[** / **⌘]** | Back / Forward through the current session’s reading history |
 | **⌘R** | Start a Standard Scan |
-| **⌘J** | Show / hide the Command Workspace |
+| **⌘J** | Show / hide the Terminal & Command Builder |
 | **Ctrl-C** in an active terminal | Interrupt the foreground terminal program |
 
 ## Local data and privacy
@@ -238,6 +244,7 @@ The application stores its catalog in `~/Library/Application Support/ManPagesCat
 | `search.sqlite` | Local search index and extracted metadata |
 | `discovery-v1.json` | Discovered manuals, source locations, and coverage |
 | `scan-checkpoint-v1.json` | Pending traversal for resumable discovery |
+| `scan-performance-v1.json` | Local timing, queues, sampled memory and durability diagnostics |
 
 Selected folders and appearance preferences use macOS app preferences. Original manuals and existing `~/ManPages` PDF catalogs are not rewritten. The historical Python generator remains in the repository for reference and is not included in the native app bundle.
 
@@ -292,6 +299,7 @@ SwiftPM pins SwiftTerm and records resolved packages. The app includes its shade
 │   ├── Models/           # retained catalog models
 │   └── Resources/        # app icon and SwiftTerm license
 ├── NativeTests/          # real-manual, reader, PDF, discovery, and PTY tests
+├── NativeUITests/        # isolated app launch and stable-ID command workflows
 ├── Branding/             # logo, app icons, social preview, website assets, provenance
 ├── docs/                 # current screenshots and workflow research
 ├── manpage_pdf_catalog/  # historical Python generator; not a bundled runtime
@@ -305,12 +313,40 @@ SwiftPM pins SwiftTerm and records resolved packages. The app includes its shade
 ### Run the integration suite
 
 ```sh
-xcodebuild -project ManPageCatalog.xcodeproj -scheme ManPageCatalog \
+/usr/bin/xcodebuild -project ManPageCatalog.xcodeproj -scheme ManPageCatalog \
   -configuration Debug -derivedDataPath build/DerivedData \
   -destination 'platform=macOS' test CODE_SIGN_IDENTITY=-
 ```
 
-Tests use installed `launchctl`, `ping`, `ifconfig`, `netstat`, and `scutil` manuals plus temporary collections. They exercise extraction, renamed compressed sources, aliases, duplicates, incremental scans, cancellation, durable resume, stale-write isolation, SQLite search, WebKit Find/history, PDF rendering, and legacy catalog preservation. PTY integration covers explicit startup, input, resizing, Ctrl-C, multiline execution, and attached-job cleanup. The test host uses an empty automatic scan scope and a separate temporary index.
+Tests use installed `launchctl`, `ping`, `ifconfig`, `netstat`, `scutil`, `ls`, and `du` manuals plus temporary collections. They exercise extraction, renamed compressed sources, aliases, duplicates, incremental scans, cancellation, durable resume, stale-write isolation, SQLite search, WebKit Find/history, PDF rendering, and legacy catalog preservation. Native export-panel integration verifies window ownership, panel cancellation, competing-sheet rejection and interaction with another window. PTY integration covers explicit startup, input, resizing, Ctrl-C, multiline execution, attached-job cleanup, exact generated-path/clipboard/execution parity, quoted filenames, missing executables, invalid inputs, and review invalidation. A rendered command-pane test presses options by stable accessibility ID and verifies the updated preview. The test host uses an empty automatic scan scope and a separate temporary index.
+
+The native UI target needs an unlocked, active macOS desktop. Close the target app before running it: the test refuses to replace an existing instance, launches its own temporary library with the actual installed `ls` manual, and verifies Cancel/Replace preserve drafts or prepare a new command without executing it. Leave the owned test window untouched during the run; native UI automation controls the desktop and cannot run invisibly while you interact with that window. To run the native integration target while UI interaction is unavailable, add `-skip-testing:ManPageCatalogUITests` to the command above; that explicitly skips the launched-app workflow and does not establish its UI behavior.
+
+### Measure indexing and interaction locally
+
+[ManualRichCorpus.swift](Benchmarks/ManualRichCorpus.swift) defines the explicit CLI for deterministic source generation, physical verification, independent inventory/FTS verification and ownership-checked cleanup. Generation requires file, storage and free-space limits; interruption retains its checkpoint. Build it with `Benchmarks/build_manual_rich_corpus.sh /absolute/output/path`. [LibraryBenchmark.swift](Benchmarks/LibraryBenchmark.swift), built with `Benchmarks/build_library_benchmark.sh /absolute/output/path`, exercises the production library with an isolated output directory, cancellation threshold and deadline. The existing traversal corpus harness remains separate; generated paths never count as inspected files.
+
+Coverage export includes a companion performance report. Its optional `indexingWork` measurements separate bounded formatter batches, committed database transactions, metadata publication and atomic inventory writes; these are wall times with explicit boundaries. Discovery and indexing rates, pending/active queues, cancellation durability and sampled main-process RSS remain distinct. Kernel maximum RSS and rendered interactions require separate observations.
+
+For a bounded interaction probe, launch with `--env MANPAGES_INTERACTION_DIAGNOSTICS=/absolute/existing/local/folder/interactions.jsonl`. It records handler/binding-to-service and native-view-state acknowledgements for search, reading and Find. These endpoints do not establish event-to-pixel latency or the painting of every result row. Output is local only, limited to 2,000 records per session and 32 MiB per file; it can contain search queries and manual identities. No interaction file is created unless explicitly enabled. The stable-ID [ResponsivenessProbe.mjs](Benchmarks/ResponsivenessProbe.mjs) measures automation action-to-AX observation separately, including automation overhead. Sampling cost and host/cache conditions must accompany performance comparisons.
+
+### Measure whole-filesystem coverage in the background
+
+The [DiscoveryBenchmark](Benchmarks/DiscoveryBenchmark.swift) uses production discovery, durable checkpoints, formatting and SQLite indexing without opening an app window. `scan` requires explicit roots and a separate output directory. `whole-filesystem` uses the app's local mounted-volume plan and explicitly excludes its own output, including directory and file symlinks into that folder. Reports retain that gap; network volumes and cloud placeholders remain excluded. Use a new output folder and keep the binary and logs outside the tree being measured for selected-root runs.
+
+From the repository root:
+
+```sh
+benchmark_binary="$PWD/build/discovery-benchmark"
+measurement_output="$PWD/build/WholeFilesystemMeasurement"
+/bin/zsh Benchmarks/build_discovery_benchmark.sh "$benchmark_binary"
+"$benchmark_binary" whole-filesystem --output "$measurement_output" \
+  --cancel-seconds 30 --telemetry enabled --cache-state unknown
+"$benchmark_binary" resume --output "$measurement_output" \
+  --cancel-seconds 0 --telemetry enabled --cache-state unknown
+```
+
+The first process stops durably after the requested interval; the second reopens its saved scope. Resume requires the same boot and validates unfinished directory identities and consumed entry prefixes. Older selected-root checkpoints gain an owned-output exclusion after scope validation; older overlapping checkpoints without that persisted exclusion fail without changing their bytes. Previously traversed sources and cached content remain historical. Changes after traversal and newly mounted volumes require a fresh scan; uncached indexing rechecks source-chain access and its fingerprint before formatting. Inspect `result.json`, `coverage.json` and `coverage.performance.json`: zero pending locations means traversal finished, while classified gaps and formatter failures still limit coverage. These files contain local paths and manual metadata; keep them out of published artifacts. Native Save-sheet reliability and rendered app behavior require separate desktop verification.
 
 ### Verify an extracted application
 
@@ -339,9 +375,11 @@ The manually triggered workflow builds/tests on a macOS runner and creates a uni
 
 ## Validation and roadmap
 
-The current native build passed **18 integration tests** and a universal Release build. Its extracted app was launched on Apple Silicon with a new temporary catalog; search, original-manual reading, in-page Find, bundled icon identity, and code-signature integrity were checked. PDF, cancellation/resume, and terminal behaviors also have integration coverage. These checks do not establish complete-machine discovery, Intel hardware compatibility, or full accessibility compliance.
+Current implementation and check results are tracked in [TODO.md](TODO.md). Production indexing inspected 10,010 manual source locations grouped into 10,006 manuals, with independently verified content markers and locations. The serial indexing run took 90.582 seconds versus 136.333 seconds baseline; kernel maximum RSS was 267.39 MiB versus 427.08 MiB. Cache state and host activity were uncontrolled, so these observations are not universal speed guarantees. Earlier selected-root scans verified two separate two-million-file corpora, including one directory containing two million siblings.
 
-[TODO.md](TODO.md) is the single prioritized implementation backlog. It distinguishes verified work, implemented-but-unverified behavior, and work not yet implemented. The next coherent milestone is **finish and harden resumable discovery**: complete a measured whole-filesystem scan, bound checkpoint/search costs, account for directory aliases, and improve recovery across filesystem changes.
+The extracted app retained search, reading and Find during indexing, durably paused at 4,172 indexed manuals in 236.573 ms, and resumed the remaining 5,834 after relaunch with exact final parity. A separate fresh library discovered three installed manuals and exported a readable 12-page PDF. Native user-triggered view acknowledgements measured 38–415 ms; background search refreshes reached 714 ms. These are handler/binding-to-state measurements, not event-to-pixel latency. Saved coverage/performance pairs match retained inventories, and ordinary second-write failure restores prior outputs. The pair is individually atomic, not crash-atomic. Coverage Save-sheet enablement remains a release blocker: the unchanged helper succeeds in an AppKit owner, while the isolated SwiftUI control and extracted app reproduce disabled Export with a valid JSON destination. A supported remedy and repeatable final packaged workflow remain unverified.
+
+The next coherent milestone is **repeatable native coverage saving**. Whole-filesystem coverage, directory aliases and recovery across filesystem changes remain open. Selected-root checks on Apple Silicon do not establish complete-machine discovery, Intel runtime compatibility or full accessibility compliance.
 
 Subsequent work covers embedded includes, more compression formats, preformatted pages, formatter compatibility, keyboard/VoiceOver verification, older-OS/Intel validation, and notarized distribution. Tabs, persistent bookmarks, semantic search, Spotlight, App Intents, SSH sessions, and multiplexing are not current features.
 
