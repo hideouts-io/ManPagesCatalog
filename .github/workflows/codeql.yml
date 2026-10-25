@@ -42,7 +42,7 @@ jobs:
           test "$(EXTERNAL_TOOLCHAINS_DIR="$search_path" xcrun --toolchain "$identifier" --sdk macosx --find metallib)" -ef "$search_path/Metal.xctoolchain/usr/bin/metallib"
           "$search_path/Metal.xctoolchain/usr/bin/metal" -v
           printf 'identifier=%s\nsearch-path=%s\n' "$identifier" "$search_path" >> "$GITHUB_OUTPUT"
-      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: swift
           build-mode: manual
@@ -57,7 +57,7 @@ jobs:
             ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO SWIFT_COMPILATION_MODE=wholemodule \
             COMPILATION_CACHE_ENABLE_CACHING=NO SWIFT_ENABLE_COMPILE_CACHE=NO SWIFT_USE_INTEGRATED_DRIVER=NO \
             CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO TOOLCHAINS="$METAL_TOOLCHAIN_IDENTIFIER com.apple.dt.toolchain.XcodeDefault"
-      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           upload: never
           upload-database: false
@@ -112,11 +112,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.language }}
           build-mode: none
-      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           upload: never
           upload-database: false
@@ -145,7 +145,7 @@ jobs:
           name: codeql-swift
           path: sarif
       - name: Upload analysis to code scanning
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: sarif
           category: /language:swift
@@ -170,7 +170,7 @@ jobs:
           name: codeql-${{ matrix.language }}
           path: sarif
       - name: Upload analysis to code scanning
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: sarif
           category: /language:${{ matrix.language }}
