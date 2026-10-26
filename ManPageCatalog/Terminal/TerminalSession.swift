@@ -20,6 +20,7 @@ final class TerminalSession: NSObject, ObservableObject, @preconcurrency Termina
     private(set) var process: LocalProcess?
     private var bridge: TerminalProcessBridge?
     private var stopTask: Task<Void, Never>?
+    private var exitTask: Task<Void, Never>?
 
     var draft: CommandDraft { CommandDraft(text: draftText, source: draftSource) }
 
@@ -121,6 +122,8 @@ final class TerminalSession: NSObject, ObservableObject, @preconcurrency Termina
     /// App termination cannot leave an asynchronous cleanup task behind.
     func shutdown() {
         guard let child = process, active else { return }
+        exitTask?.cancel()
+        exitTask = nil
         do {
             try signalTerminalSession(sessionID: child.shellPid, signal: SIGKILL)
             var result: Int32 = 0
@@ -132,15 +135,47 @@ final class TerminalSession: NSObject, ObservableObject, @preconcurrency Termina
     }
 
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
-        guard source === process else { return }
-        active = false
-        if let code = exitCode {
-            let signal = code & 0x7f
-            status = signal == 0 ? "Session ended • exit \((code >> 8) & 0xff)" : "Session ended • signal \(signal)"
-        } else { status = "Session ended without an exit status" }
-        do { try signalTerminalSession(sessionID: source.shellPid, signal: SIGKILL) }
-        catch { report(error) }
-        // Keep the connection alive to drain final PTY output; replaced only on an explicit new session.
+        guard source === process, active, exitTask == nil else { return }
+        exitTask = Task {
+            defer { if source === process { exitTask = nil } }
+            do {
+                let code = try await reapedExitCode(source, reportedExitCode: exitCode)
+                try Task.checkCancellation()
+                guard source === process, active else { return }
+                active = false
+                if let code {
+                    let signal = code & 0x7f
+                    status = signal == 0 ? "Session ended • exit \((code >> 8) & 0xff)" : "Session ended • signal \(signal)"
+                } else { status = "Session ended without an exit status" }
+                try signalTerminalSession(sessionID: source.shellPid, signal: SIGKILL)
+                // Keep the connection alive to drain final PTY output; replaced only on an explicit new session.
+            } catch is CancellationError {
+                // Synchronous shutdown retains responsibility for terminating and reaping this child.
+            } catch { report(error) }
+        }
+    }
+
+    /// SwiftTerm's exit callback may precede waitability; only an actual reap establishes completion.
+    private func reapedExitCode(_ source: LocalProcess, reportedExitCode: Int32?) async throws -> Int32? {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while true {
+            try Task.checkCancellation()
+            var code: Int32 = 0
+            let result = waitpid(source.shellPid, &code, WNOHANG)
+            if result == source.shellPid { return code }
+            if result < 0 {
+                let failure = errno
+                // This exact child was already reaped by SwiftTerm before forwarding its raw wait status.
+                if failure == ECHILD { return reportedExitCode }
+                guard failure == EINTR else {
+                    throw TerminalSessionError(message: "Cannot reap terminal process: \(String(cString: strerror(failure)))")
+                }
+            }
+            guard ContinuousClock.now < deadline else {
+                throw TerminalSessionError(message: "The terminal exit notification did not become waitable within one second. End the session before starting another.")
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     func dataReceived(slice: ArraySlice<UInt8>) { view?.feed(byteArray: slice) }
