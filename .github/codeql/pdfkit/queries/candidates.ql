@@ -7,9 +7,12 @@ string declarationKind(TypeDecl declaration) {
   or
   declaration instanceof TypeAliasDecl and result = "typealias"
   or
+  declaration instanceof ModuleDecl and result = "module"
+  or
   not declaration instanceof ClassDecl and
   not declaration instanceof ProtocolDecl and
   not declaration instanceof TypeAliasDecl and
+  not declaration instanceof ModuleDecl and
   result = "other"
 }
 

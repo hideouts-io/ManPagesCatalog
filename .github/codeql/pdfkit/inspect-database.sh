@@ -13,7 +13,7 @@ mkdir "$probe_output"
   "$codeql_cli" pack install
 )
 cp "$probe_root/queries/codeql-pack.lock.yml" "$probe_output/codeql-pack.lock.yml"
-for query in candidates inheritance calls; do
+for query in candidates inheritance calls expressions; do
   "$codeql_cli" query run "$probe_root/queries/$query.ql" \
     --database="$database" --output="$probe_output/$query.bqrs" --threads=2 --ram=4096
   "$codeql_cli" bqrs decode "$probe_output/$query.bqrs" \

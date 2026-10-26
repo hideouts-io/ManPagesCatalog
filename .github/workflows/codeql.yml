@@ -118,7 +118,7 @@ jobs:
           retention-days: 1
 
   pdfkit-reproduction:
-    name: PDFKit diagnostic Xcode ${{ matrix.xcode }}
+    name: PDFKit ${{ matrix.source }} Xcode ${{ matrix.xcode }}
     runs-on: macos-26
     timeout-minutes: 45
     permissions:
@@ -127,6 +127,7 @@ jobs:
       fail-fast: false
       matrix:
         xcode: ["26.4.1", "26.3"]
+        source: [baseline, explicit-class, selective-pdfkit]
     env:
       DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
     steps:
@@ -141,18 +142,57 @@ jobs:
       - name: Compare public PDFKit reproduction and imported semantics
         env:
           CODEQL_CLI: ${{ steps.probe-init.outputs.codeql-path }}
+          PROBE_SOURCE: ${{ matrix.source }}
         run: |
           test -d "$DEVELOPER_DIR"
-          bash .github/codeql/pdfkit/reproduce.sh "$CODEQL_CLI" "$RUNNER_TEMP/pdfkit-reproduction"
+          bash .github/codeql/pdfkit/reproduce.sh "$CODEQL_CLI" \
+            ".github/codeql/pdfkit/$PROBE_SOURCE/FileUtilities.swift" "$RUNNER_TEMP/pdfkit-reproduction"
       - name: Upload fixture-only diagnostic results
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: pdfkit-reproduction-xcode-${{ matrix.xcode }}
+          name: pdfkit-${{ matrix.source }}-xcode-${{ matrix.xcode }}
           path: |
-            ${{ runner.temp }}/pdfkit-reproduction/summary-*/*
+            ${{ runner.temp }}/pdfkit-reproduction/summary/*
             ${{ runner.temp }}/pdfkit-reproduction/toolchain.txt
             ${{ runner.temp }}/pdfkit-reproduction/codeql-version.json
+          if-no-files-found: error
+          retention-days: 1
+
+  import-isolation:
+    name: Import-only ${{ matrix.module }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [foundation, appkit, pdfkit]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: isolation-setup
+        with:
+          languages: swift
+          tools: linked
+      - name: Extract one SDK import without PDF operations
+        env:
+          CODEQL_CLI: ${{ steps.isolation-setup.outputs.codeql-path }}
+          PROBE_MODULE: ${{ matrix.module }}
+        run: |
+          bash .github/codeql/pdfkit/isolate-import.sh "$CODEQL_CLI" \
+            ".github/codeql/pdfkit/import-controls/$PROBE_MODULE/Probe.swift" "$RUNNER_TEMP/import-isolation"
+      - name: Upload import-only diagnostic summary
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: import-only-${{ matrix.module }}
+          path: ${{ runner.temp }}/import-isolation/summary/*
           if-no-files-found: error
           retention-days: 1
 
