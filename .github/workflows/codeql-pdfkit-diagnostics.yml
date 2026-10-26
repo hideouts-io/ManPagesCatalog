@@ -162,6 +162,11 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: native-pdfkit-sdk-lookup
-          path: ${{ runner.temp }}/sdk-lookup/*
+          path: |
+            ${{ runner.temp }}/sdk-lookup/toolchain.txt
+            ${{ runner.temp }}/sdk-lookup/sdk-declarations.txt
+            ${{ runner.temp }}/sdk-lookup/exit-status.json
+            ${{ runner.temp }}/sdk-lookup/import-only.log
+            ${{ runner.temp }}/sdk-lookup/macro-reference.log
           if-no-files-found: error
           retention-days: 1
