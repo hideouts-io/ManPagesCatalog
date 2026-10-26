@@ -43,9 +43,11 @@ jobs:
           "$search_path/Metal.xctoolchain/usr/bin/metal" -v
           printf 'identifier=%s\nsearch-path=%s\n' "$identifier" "$search_path" >> "$GITHUB_OUTPUT"
       - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: swift-init
         with:
           languages: swift
           build-mode: manual
+          db-location: ${{ runner.temp }}/application-codeql-db
       - name: Build native application
         # Resolve Metal before CodeQL tracing changes toolchain discovery (codeql-action#3978).
         env:
@@ -89,12 +91,68 @@ jobs:
             exit 1
           fi
           printf 'Swift extraction compiler diagnostics: 0\n'
+      - name: Inspect application PDFKit semantics
+        if: success() || failure()
+        env:
+          CODEQL_CLI: ${{ steps.swift-init.outputs.codeql-path }}
+        run: |
+          bash .github/codeql/pdfkit/inspect-database.sh "$CODEQL_CLI" \
+            "$RUNNER_TEMP/application-codeql-db/swift" "$RUNNER_TEMP/application-semantics"
+      - name: Upload semantic probe results
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: application-pdfkit-semantics
+          path: |
+            ${{ runner.temp }}/application-semantics/*.csv
+            ${{ runner.temp }}/application-semantics/codeql-pack.lock.yml
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload SARIF artifact
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codeql-swift
           path: ${{ runner.temp }}/codeql-sarif
+          if-no-files-found: error
+          retention-days: 1
+
+  pdfkit-reproduction:
+    name: PDFKit diagnostic Xcode ${{ matrix.xcode }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        xcode: ["26.4.1", "26.3"]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: probe-init
+        with:
+          languages: swift
+          tools: linked
+      - name: Compare public PDFKit reproduction and imported semantics
+        env:
+          CODEQL_CLI: ${{ steps.probe-init.outputs.codeql-path }}
+        run: |
+          test -d "$DEVELOPER_DIR"
+          bash .github/codeql/pdfkit/reproduce.sh "$CODEQL_CLI" "$RUNNER_TEMP/pdfkit-reproduction"
+      - name: Upload fixture-only diagnostic results
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: pdfkit-reproduction-xcode-${{ matrix.xcode }}
+          path: |
+            ${{ runner.temp }}/pdfkit-reproduction/summary-*/*
+            ${{ runner.temp }}/pdfkit-reproduction/toolchain.txt
+            ${{ runner.temp }}/pdfkit-reproduction/codeql-version.json
           if-no-files-found: error
           retention-days: 1
 
