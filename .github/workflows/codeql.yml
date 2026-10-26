@@ -196,6 +196,49 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  matching-compiler:
+    name: Swift 6.3.1 extraction with current analysis
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Verify official matching-compiler bundle
+        run: |
+          curl --fail --location --connect-timeout 10 --max-time 300 \
+            https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.25.5/codeql-bundle-osx64.tar.gz \
+            -o "$RUNNER_TEMP/codeql-2.25.5.tar.gz"
+          printf 'c365f6c41145b97150c32026f72df1d02060b15c560588785e764eec10be945e  %s\n' "$RUNNER_TEMP/codeql-2.25.5.tar.gz" | shasum -a 256 -c -
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: matching-extractor
+        with:
+          languages: swift
+          tools: ${{ runner.temp }}/codeql-2.25.5.tar.gz
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: current-analysis
+        with:
+          languages: swift
+          tools: linked
+      - name: Compare matching extraction with unchanged current security queries
+        env:
+          EXTRACTOR_CLI: ${{ steps.matching-extractor.outputs.codeql-path }}
+          ANALYSIS_CLI: ${{ steps.current-analysis.outputs.codeql-path }}
+        run: |
+          bash .github/codeql/pdfkit/compare-extractor.sh "$EXTRACTOR_CLI" "$ANALYSIS_CLI" "$RUNNER_TEMP/matching-extractor"
+      - name: Upload matching-compiler diagnostic summary
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: matching-compiler-current-analysis
+          path: ${{ runner.temp }}/matching-extractor/summary/*
+          if-no-files-found: error
+          retention-days: 1
+
   supported:
     name: Analyze ${{ matrix.language }}
     runs-on: ubuntu-latest
