@@ -1,0 +1,167 @@
+name: PDFKit extraction diagnostics
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/codeql/pdfkit/**
+      - .github/workflows/codeql-pdfkit-diagnostics.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pdfkit-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
+# These controls report diagnostic evidence; the required CodeQL workflow owns acceptance.
+jobs:
+  pdfkit-reproduction:
+    if: github.event_name == 'workflow_dispatch'
+    name: PDFKit ${{ matrix.source }} Xcode ${{ matrix.xcode }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        xcode: ["26.4.1", "26.3"]
+        source: [baseline, explicit-class, selective-pdfkit]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_${{ matrix.xcode }}.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: probe-init
+        with:
+          languages: swift
+          tools: linked
+      - name: Compare public PDFKit reproduction and imported semantics
+        env:
+          CODEQL_CLI: ${{ steps.probe-init.outputs.codeql-path }}
+          PROBE_SOURCE: ${{ matrix.source }}
+        run: |
+          test -d "$DEVELOPER_DIR"
+          bash .github/codeql/pdfkit/reproduce.sh "$CODEQL_CLI" \
+            ".github/codeql/pdfkit/$PROBE_SOURCE/FileUtilities.swift" "$RUNNER_TEMP/pdfkit-reproduction"
+      - name: Upload fixture-only diagnostic results
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: pdfkit-${{ matrix.source }}-xcode-${{ matrix.xcode }}
+          path: |
+            ${{ runner.temp }}/pdfkit-reproduction/summary/*
+            ${{ runner.temp }}/pdfkit-reproduction/toolchain.txt
+            ${{ runner.temp }}/pdfkit-reproduction/codeql-version.json
+          if-no-files-found: error
+          retention-days: 1
+
+  import-isolation:
+    if: github.event_name == 'workflow_dispatch'
+    name: Import-only ${{ matrix.module }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [foundation, appkit, pdfkit]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: isolation-setup
+        with:
+          languages: swift
+          tools: linked
+      - name: Extract one SDK import without PDF operations
+        env:
+          CODEQL_CLI: ${{ steps.isolation-setup.outputs.codeql-path }}
+          PROBE_MODULE: ${{ matrix.module }}
+        run: |
+          bash .github/codeql/pdfkit/isolate-import.sh "$CODEQL_CLI" \
+            ".github/codeql/pdfkit/import-controls/$PROBE_MODULE/Probe.swift" "$RUNNER_TEMP/import-isolation"
+      - name: Upload import-only diagnostic summary
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: import-only-${{ matrix.module }}
+          path: ${{ runner.temp }}/import-isolation/summary/*
+          if-no-files-found: error
+          retention-days: 1
+
+  matching-compiler:
+    if: github.event_name == 'workflow_dispatch'
+    name: Swift 6.3.1 extraction with current analysis
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Verify official matching-compiler bundle
+        run: |
+          curl --fail --location --connect-timeout 10 --max-time 300 \
+            https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.25.5/codeql-bundle-osx64.tar.gz \
+            -o "$RUNNER_TEMP/codeql-2.25.5.tar.gz"
+          printf 'c365f6c41145b97150c32026f72df1d02060b15c560588785e764eec10be945e  %s\n' "$RUNNER_TEMP/codeql-2.25.5.tar.gz" | shasum -a 256 -c -
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: matching-extractor
+        with:
+          languages: swift
+          tools: ${{ runner.temp }}/codeql-2.25.5.tar.gz
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: current-analysis
+        with:
+          languages: swift
+          tools: linked
+      - name: Compare matching extraction with unchanged current security queries
+        env:
+          EXTRACTOR_CLI: ${{ steps.matching-extractor.outputs.codeql-path }}
+          ANALYSIS_CLI: ${{ steps.current-analysis.outputs.codeql-path }}
+        run: |
+          bash .github/codeql/pdfkit/compare-extractor.sh "$EXTRACTOR_CLI" "$ANALYSIS_CLI" "$RUNNER_TEMP/matching-extractor"
+      - name: Upload matching-compiler diagnostic summary
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: matching-compiler-current-analysis
+          path: ${{ runner.temp }}/matching-extractor/summary/*
+          if-no-files-found: error
+          retention-days: 1
+
+
+  sdk-lookup:
+    name: Native PDFKit SDK macro lookup
+    runs-on: macos-26
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Record native SDK import and macro lookup
+        run: bash .github/codeql/pdfkit/inspect-sdk-lookup.sh "$RUNNER_TEMP/sdk-lookup"
+      - name: Upload native compiler diagnostic summary
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-pdfkit-sdk-lookup
+          path: ${{ runner.temp }}/sdk-lookup/*
+          if-no-files-found: error
+          retention-days: 1
