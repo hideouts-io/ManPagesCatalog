@@ -6,6 +6,309 @@ import SwiftUI
 @testable import Man_Page_Catalog
 
 final class DiscoveryIntegrationTests: XCTestCase {
+    func testFailedAtomicCompanionPreservesForeignReplacement() throws {
+        try verifyFailedAtomicDestinationPreservation(previous: Data("previous companion".utf8))
+    }
+
+    func testFailedAtomicCompanionPreservesNewFile() throws {
+        try verifyFailedAtomicDestinationPreservation(previous: nil)
+    }
+
+    private func verifyFailedAtomicDestinationPreservation(previous: Data?) throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let coverage = directory.appendingPathComponent("coverage.json")
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let originalCoverage = Data("previous coverage".utf8)
+        let newCoverage = Data("new coverage".utf8)
+        try originalCoverage.write(to: coverage, options: .atomic)
+        if let previous { try previous.write(to: companion, options: .atomic) }
+        let exports = [try prepareCoverageExport(destination: coverage, bytes: newCoverage),
+                       try prepareCoverageExport(destination: companion, bytes: Data("new companion".utf8))]
+        defer { for export in exports { XCTAssertTrue(closeCoverageExport(export).isEmpty) } }
+        try publishCoverageExport(exports[0])
+        try denyExportDirectoryWrites(directory)
+        var writeFailure: Error?
+        do { try publishCoverageExport(exports[1]) }
+        catch { writeFailure = error }
+        let failure = try XCTUnwrap(writeFailure, "The actual atomic companion publication must fail before recovery.")
+        guard chmod(directory.path, 0o700) == 0 else {
+            throw ManualToolError(message: "Cannot restore owned fixture write access: errno \(errno).")
+        }
+        let foreign = Data("independent writer after failed companion write".utf8)
+        try foreign.write(to: companion, options: .atomic)
+        var foreignIdentity = stat()
+        XCTAssertEqual(lstat(companion.path, &foreignIdentity), 0)
+        XCTAssertThrowsError(try restoreCoverageExport(exports: exports, failedIndex: 1, publishedIndices: [0], writeFailure: failure)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(companion.path))
+            XCTAssertTrue(error.localizedDescription.contains("changed independently"))
+            XCTAssertTrue(error.localizedDescription.contains(failure.localizedDescription))
+        }
+        XCTAssertEqual(try Data(contentsOf: companion), foreign)
+        var retainedIdentity = stat()
+        XCTAssertEqual(lstat(companion.path, &retainedIdentity), 0)
+        XCTAssertEqual(retainedIdentity.st_ino, foreignIdentity.st_ino)
+        XCTAssertEqual(try Data(contentsOf: coverage), originalCoverage)
+    }
+
+    func testOwnedExportRestoresPreviousBytes() throws {
+        try verifyOwnedExportRestoration(original: Data("previous coverage".utf8))
+    }
+
+    func testOwnedExportRestoresPreviousAbsence() throws {
+        try verifyOwnedExportRestoration(original: nil)
+    }
+
+    private func verifyOwnedExportRestoration(original: Data?) throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        if let original { try original.write(to: destination, options: .atomic) }
+        let replacement = Data("published coverage".utf8)
+        let export = try prepareCoverageExport(destination: destination, bytes: replacement)
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        var recoveryMetadata = stat()
+        XCTAssertEqual(lstat(export.recoveryURL.path, &recoveryMetadata), 0)
+        XCTAssertEqual(recoveryMetadata.st_mode & 0o777, 0o700)
+        try publishCoverageExport(export)
+        let outcome = try restorePublishedCoverageExport(export)
+        XCTAssertTrue(outcome.contains(destination.path))
+        if let original { XCTAssertEqual(try Data(contentsOf: destination), original) }
+        else { XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path)) }
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), replacement)
+    }
+
+    func testPublishedExportPreservesIndependentReplacementAndOriginalBackup() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("previous coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("new coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        try publishCoverageExport(export)
+        let foreign = Data("independent successful-destination writer".utf8)
+        try foreign.write(to: destination, options: .atomic)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try restorePublishedCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("changed after publication"))
+            XCTAssertTrue(error.localizedDescription.contains(export.recoveryURL.path))
+        }
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+    }
+
+    func testPublishedExportPreservesInPlaceWriterAndOriginalBackup() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("previous coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("new coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        try publishCoverageExport(export)
+        let foreign = Data("changed data".utf8)
+        let writer = try FileHandle(forWritingTo: destination)
+        try writer.write(contentsOf: foreign)
+        try writer.close()
+        var current = stat()
+        XCTAssertEqual(lstat(destination.path, &current), 0)
+        XCTAssertEqual(current.st_ino, export.replacement.identity.inode)
+        XCTAssertThrowsError(try restorePublishedCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("changed after publication"))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+    }
+
+    func testDeniedRestorationRetainsPublishedAndPriorBytes() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("previous coverage".utf8)
+        let replacement = Data("new coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: replacement)
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        try publishCoverageExport(export)
+        try denyExportDirectoryWrites(directory)
+        XCTAssertThrowsError(try restorePublishedCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("capture published output"))
+            XCTAssertTrue(error.localizedDescription.contains(export.recoveryURL.path))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), replacement)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+    }
+
+    func testExclusiveOriginalRestorationPreservesNewerPathAndCapturedBytes() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("previous coverage".utf8)
+        let replacement = Data("new coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: replacement)
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        try publishCoverageExport(export)
+        try capturePublishedCoverageExport(export)
+        let foreign = Data("writer after capture".utf8)
+        try foreign.write(to: destination, options: .atomic)
+        XCTAssertThrowsError(try restoreCapturedCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("errno 17"))
+            XCTAssertTrue(error.localizedDescription.contains(export.recoveryURL.path))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), replacement)
+    }
+
+    func testForeignCaptureReturnsWithoutOverwritingNewerPath() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("previous coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("new coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        try publishCoverageExport(export)
+        let capturedForeign = Data("foreign before capture".utf8)
+        try capturedForeign.write(to: destination, options: .atomic)
+        try capturePublishedCoverageExport(export)
+        let newest = Data("newer independent writer".utf8)
+        try newest.write(to: destination, options: .atomic)
+        XCTAssertThrowsError(try restoreCapturedCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("changed during capture"))
+            XCTAssertTrue(error.localizedDescription.contains("errno 17"))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), newest)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), capturedForeign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+    }
+
+    func testForeignSymlinkCaptureReturnsWithoutFollowingTarget() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let target = directory.appendingPathComponent("untouched.txt")
+        let targetBytes = Data("foreign symlink target".utf8)
+        try targetBytes.write(to: target)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("new coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        try publishCoverageExport(export)
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: target)
+        try capturePublishedCoverageExport(export)
+        XCTAssertThrowsError(try restoreCapturedCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Captured entry returned"))
+        }
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: destination.path), target.path)
+        XCTAssertEqual(try Data(contentsOf: target), targetBytes)
+    }
+
+    func testPreparedPairRefusesRecreatedParentBeforePublication() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let parent = directory.appendingPathComponent("exports")
+        let relocated = directory.appendingPathComponent("relocated-exports")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        let coverage = parent.appendingPathComponent("coverage.json")
+        let previousCoverage = Data("prior coverage in original directory".utf8)
+        try previousCoverage.write(to: coverage)
+        let first = try prepareCoverageExport(destination: coverage, bytes: Data("new coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(first).isEmpty) }
+        try FileManager.default.moveItem(at: parent, to: relocated)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        let companion = parent.appendingPathComponent("coverage.performance.json")
+        let previousCompanion = Data("prior companion in replacement directory".utf8)
+        try previousCompanion.write(to: companion)
+        let second = try prepareCoverageExport(destination: companion, bytes: Data("new companion".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(second).isEmpty) }
+        XCTAssertThrowsError(try validateCoverageExportParents([first, second])) { error in
+            XCTAssertTrue(error.localizedDescription.contains("different directory identities"))
+            XCTAssertTrue(error.localizedDescription.contains("Neither output file was changed"))
+        }
+        XCTAssertEqual(try Data(contentsOf: relocated.appendingPathComponent("coverage.json")), previousCoverage)
+        XCTAssertEqual(try Data(contentsOf: companion), previousCompanion)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: coverage.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: relocated.appendingPathComponent("coverage.performance.json").path))
+        let retainedFirst = relocated.appendingPathComponent(first.recoveryURL.lastPathComponent)
+        XCTAssertEqual(try Data(contentsOf: retainedFirst.appendingPathComponent("replacement")), first.replacement.bytes)
+        XCTAssertEqual(try Data(contentsOf: second.recoveryURL.appendingPathComponent("replacement")), second.replacement.bytes)
+    }
+
+    func testRecoveryDirectorySubstitutionRefusesCleanupBeforeRemovingBackup() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let previous = Data("prior output".utf8)
+        try previous.write(to: destination)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("published output".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        try publishCoverageExport(export)
+        let retained = directory.appendingPathComponent("relocated-recovery")
+        try FileManager.default.moveItem(at: export.recoveryURL, to: retained)
+        try FileManager.default.createDirectory(at: export.recoveryURL, withIntermediateDirectories: false)
+        var replacement = stat()
+        XCTAssertEqual(lstat(export.recoveryURL.path, &replacement), 0)
+        XCTAssertThrowsError(try removePreparedCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Recovery directory pathname changed identity"))
+        }
+        XCTAssertEqual(try Data(contentsOf: retained.appendingPathComponent("original")), previous)
+        XCTAssertEqual(try Data(contentsOf: destination), export.replacement.bytes)
+        var unchanged = stat()
+        XCTAssertEqual(lstat(export.recoveryURL.path, &unchanged), 0)
+        XCTAssertEqual(unchanged.st_ino, replacement.st_ino)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: export.recoveryURL.path).isEmpty)
+    }
+
+    func testInvalidCoverageDestinationsPreserveExistingPathBeforePreparation() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let retained = Data("existing destination must remain untouched".utf8)
+        try retained.write(to: destination)
+        let nulURL = try XCTUnwrap(URL(string: destination.absoluteString + "%00-suffix"))
+        XCTAssertTrue(nulURL.path(percentEncoded: false).contains("\0"))
+        let nonfileURL = try XCTUnwrap(URL(string: "https://example.invalid/coverage.json"))
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        for invalid in [nulURL, nonfileURL, URL(fileURLWithPath: "/")] {
+            XCTAssertThrowsError(try prepareCoverageExport(destination: invalid, bytes: Data("replacement".utf8))) { error in
+                XCTAssertTrue(error.localizedDescription.contains("nonempty filename and no NUL"))
+                XCTAssertFalse(error.localizedDescription.contains("\0"))
+            }
+        }
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(try Data(contentsOf: destination), retained)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["coverage.json"])
+    }
+
+    private func exportRecoveryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ExportRecovery-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        guard chmod(directory.path, 0o700) == 0 else { throw ManualToolError(message: "Cannot protect owned export fixture: errno \(errno).") }
+        return directory
+    }
+
+    private func denyExportDirectoryWrites(_ directory: URL) throws {
+        guard geteuid() != 0, chmod(directory.path, 0o555) == 0 else {
+            throw ManualToolError(message: "Export integration requires a non-root identity and owned directory mode0555 (errno \(errno)).")
+        }
+        XCTAssertNotEqual(access(directory.path, W_OK), 0)
+    }
+
+    private func removeExportRecoveryDirectory(_ directory: URL) {
+        if chmod(directory.path, 0o700) != 0 { XCTFail("Cannot restore owned export fixture permissions: errno \(errno).") }
+        do { try FileManager.default.removeItem(at: directory) }
+        catch { XCTFail("Cannot remove owned export fixture: \(error)") }
+    }
+
     func testRecursiveRealManualsAliasesVersionsAndCoverage() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Discovery-\(UUID().uuidString)")
         let nested = directory.appendingPathComponent(".hidden/Tool.app/Contents/Resources/fr/man1")
@@ -522,8 +825,7 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertEqual(lstat(deniedCompanion.path, &beforeCompanion), 0)
         XCTAssertThrowsError(try store.exportCoverage(to: deniedCoverage)) { error in
             XCTAssertTrue(error.localizedDescription.contains(deniedCoverage.path))
-            XCTAssertTrue(error.localizedDescription.contains("retains its previous bytes or absence"))
-            XCTAssertTrue(error.localizedDescription.contains("Not written: \(deniedCompanion.path)"))
+            XCTAssertTrue(error.localizedDescription.contains("Neither output file was changed"))
             XCTAssertFalse(error.localizedDescription.contains("Restoration failed"))
         }
         XCTAssertEqual(try Data(contentsOf: deniedCoverage), coverageBytes)

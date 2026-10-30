@@ -408,6 +408,7 @@ final class LibraryStore: ObservableObject {
 
     /// Legacy coverage remains an array; timing diagnostics are a named companion export.
     func exportCoverage(to url: URL) throws {
+        try validateCoverageExportDestination(url)
         guard let performanceReport else {
             throw ManualToolError(message: "Cannot export coverage to \(url.path): this catalog has no measured scan diagnostics. Run a scan before exporting. Neither output file was changed.")
         }
@@ -418,55 +419,39 @@ final class LibraryStore: ObservableObject {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let reports: [(destination: URL, bytes: Data)]
-        let originals: [Data?]
         do {
             reports = [(url, try encoder.encode(coverage)), (companion, try encoder.encode(performanceReport))]
-            originals = try reports.map { try coverageExportOriginal(at: $0.destination) }
         } catch {
             throw ManualToolError(message: "Cannot prepare coverage export to \(url.path) and \(companion.path): \(error.localizedDescription) Neither output file was changed.")
         }
-        var attemptedIndex = 0
-        var replaced: [Int] = []
+        var exports: [CoverageExport] = []
         do {
-            for (index, report) in reports.enumerated() {
+            for report in reports { exports.append(try prepareCoverageExport(destination: report.destination, bytes: report.bytes)) }
+            try validateCoverageExportParents(exports)
+        } catch {
+            let cleanup = exports.flatMap(closeCoverageExport)
+            throw ManualToolError(message: "Cannot prepare coverage export to \(url.path) and \(companion.path): \(error.localizedDescription) Neither output file was changed. Prepared recovery files remain at \(exports.map { $0.recoveryURL.path }.joined(separator: ", ")). \(cleanup.joined(separator: " "))")
+        }
+        var attemptedIndex = 0
+        var published: [Int] = []
+        do {
+            for (index, export) in exports.enumerated() {
                 attemptedIndex = index
-                try report.bytes.write(to: report.destination, options: .atomic)
-                replaced.append(index)
+                try publishCoverageExport(export)
+                published.append(index)
             }
         } catch {
-            let originalFailure = error.localizedDescription
-            var restoration: [String] = []
-            let failed = reports[attemptedIndex].destination
-            do {
-                if try coverageExportOriginal(at: failed) == originals[attemptedIndex] {
-                    restoration.append("Failed atomic destination \(failed.path) retains its previous bytes or absence; it was not rewritten.")
-                } else {
-                    replaced.append(attemptedIndex)
-                    restoration.append("Failed atomic destination \(failed.path) differs from its captured prior state and requires restoration.")
-                }
-            } catch {
-                restoration.append("Cannot verify failed atomic destination \(failed.path): \(error.localizedDescription) Its state could not be confirmed; it was not rewritten.")
-            }
-            for index in replaced.reversed() {
-                let report = reports[index]
-                do {
-                    if let original = originals[index] {
-                        try original.write(to: report.destination, options: .atomic)
-                        restoration.append("Restored previous bytes at \(report.destination.path).")
-                    } else {
-                        if try coverageExportOriginal(at: report.destination) != nil {
-                            try FileManager.default.removeItem(at: report.destination)
-                        }
-                        restoration.append("Restored the absence of \(report.destination.path).")
-                    }
-                } catch {
-                    restoration.append("Restoration failed at \(report.destination.path): \(error.localizedDescription) Its prior state could not be confirmed.")
-                }
-            }
-            for index in reports.indices where index > attemptedIndex {
-                restoration.append("Not written: \(reports[index].destination.path).")
-            }
-            throw ManualToolError(message: "Coverage export failed while writing \(failed.path): \(originalFailure) \(restoration.joined(separator: " "))")
+            try restoreCoverageExport(exports: exports, failedIndex: attemptedIndex,
+                                      publishedIndices: published, writeFailure: error)
+        }
+        var cleanup: [String] = []
+        for export in exports {
+            do { try removePreparedCoverageExport(export) }
+            catch { cleanup.append(error.localizedDescription) }
+            cleanup.append(contentsOf: closeCoverageExport(export))
+        }
+        if !cleanup.isEmpty {
+            throw ManualToolError(message: "Both coverage outputs were saved, but recovery-file cleanup failed: \(cleanup.joined(separator: " "))")
         }
     }
 
@@ -740,50 +725,290 @@ final class LibraryStore: ObservableObject {
     }
 }
 
-/// Prior-output backups are limited to 64 MiB each, including growth during reads; never follow file symlinks or hydrate placeholders.
-private func coverageExportOriginal(at url: URL) throws -> Data? {
-    let maximumBackupBytes: Int = 64 * 1024 * 1024
+struct CoverageExportIdentity: Equatable {
+    let device: dev_t
+    let inode: ino_t
+}
+
+struct CoverageExportFile {
+    let name: String
+    let identity: CoverageExportIdentity
+    let bytes: Data
+}
+
+/// Directory handles anchor all publication and rollback operations to their prepared directories.
+struct CoverageExport {
+    let destination: URL
+    let parent: FileHandle
+    let recovery: FileHandle
+    let recoveryURL: URL
+    let replacement: CoverageExportFile
+    let original: CoverageExportFile?
+}
+
+private let maximumCoverageBackupBytes: Int = 64 * 1024 * 1024
+
+private func coverageExportError(operation: String, destination: URL, code: Int32) -> ManualToolError {
+    ManualToolError(message: "Cannot \(operation) at \(destination.path): \(String(cString: strerror(code))) (errno \(code)).")
+}
+
+private func validateCoverageExportDestination(_ destination: URL) throws {
+    let filename = destination.lastPathComponent
+    guard destination.isFileURL, !filename.isEmpty, filename != ".", filename != "..",
+          !filename.contains("/"), !destination.path(percentEncoded: false).contains("\0") else {
+        throw ManualToolError(message: "Cannot prepare coverage export: choose a local file URL with a nonempty filename and no NUL characters. Neither output file was changed.")
+    }
+}
+
+/// Both outputs must share the same opened directory before the first publication.
+func validateCoverageExportParents(_ exports: [CoverageExport]) throws {
+    guard exports.count == 2 else { throw ManualToolError(message: "Coverage export requires two prepared destinations. Neither output file was changed.") }
+    var expected: CoverageExportIdentity?
+    for export in exports {
+        var metadata = stat()
+        guard fstat(export.parent.fileDescriptor, &metadata) == 0 else {
+            throw coverageExportError(operation: "identify prepared export directory", destination: export.destination, code: errno)
+        }
+        let identity = CoverageExportIdentity(device: metadata.st_dev, inode: metadata.st_ino)
+        guard metadata.st_mode & S_IFMT == S_IFDIR, expected == nil || expected == identity else {
+            throw ManualToolError(message: "Prepared coverage outputs refer to different directory identities; the directory changed during preparation. Neither output file was changed. Retain \(exports.map { $0.recoveryURL.path }.joined(separator: ", ")).")
+        }
+        expected = identity
+    }
+}
+
+/// Preserve originals and close complete, exclusive staging files before changing either destination.
+func prepareCoverageExport(destination: URL, bytes: Data) throws -> CoverageExport {
+    try validateCoverageExportDestination(destination)
+    let parentURL = destination.deletingLastPathComponent()
+    let parentDescriptor = open(parentURL.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    guard parentDescriptor >= 0 else { throw coverageExportError(operation: "open export directory", destination: parentURL, code: errno) }
+    let parent = FileHandle(fileDescriptor: parentDescriptor, closeOnDealloc: true)
+    let recoveryName = ".coverage-recovery-\(UUID().uuidString)"
+    let recoveryURL = parentURL.appendingPathComponent(recoveryName, isDirectory: true)
+    var recovery: FileHandle?
+    do {
+        let original = try coverageExportSnapshot(directory: parentDescriptor, name: destination.lastPathComponent,
+                                                 destination: destination, maximumBytes: maximumCoverageBackupBytes)
+        guard mkdirat(parentDescriptor, recoveryName, 0o700) == 0 else {
+            throw coverageExportError(operation: "create private recovery directory", destination: recoveryURL, code: errno)
+        }
+        let descriptor = openat(parentDescriptor, recoveryName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw coverageExportError(operation: "open private recovery directory", destination: recoveryURL, code: errno) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        recovery = handle
+        let backup: CoverageExportFile?
+        if let original {
+            backup = try createCoverageExportFile(directory: descriptor, name: "original", bytes: original.bytes, location: recoveryURL)
+        } else { backup = nil }
+        let replacement = try createCoverageExportFile(directory: descriptor, name: "replacement", bytes: bytes, location: recoveryURL)
+        return CoverageExport(destination: destination, parent: parent, recovery: handle,
+                              recoveryURL: recoveryURL, replacement: replacement, original: backup)
+    } catch {
+        var details: [String] = []
+        if let recovery {
+            do { try recovery.close() } catch { details.append("Closing recovery directory failed: \(error.localizedDescription).") }
+        }
+        do { try parent.close() } catch { details.append("Closing export directory failed: \(error.localizedDescription).") }
+        throw ManualToolError(message: "\(error.localizedDescription) Any prepared files are retained at \(recoveryURL.path). \(details.joined(separator: " "))")
+    }
+}
+
+private func createCoverageExportFile(directory: Int32, name: String, bytes: Data, location: URL) throws -> CoverageExportFile {
+    let destination = location.appendingPathComponent(name)
+    let descriptor = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    guard descriptor >= 0 else { throw coverageExportError(operation: "create exclusive recovery file", destination: destination, code: errno) }
+    let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    do {
+        try handle.write(contentsOf: bytes)
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0 else { throw coverageExportError(operation: "identify recovery file", destination: destination, code: errno) }
+        try handle.close()
+        return CoverageExportFile(name: name, identity: CoverageExportIdentity(device: metadata.st_dev, inode: metadata.st_ino), bytes: bytes)
+    } catch {
+        let failure = error.localizedDescription
+        do { try handle.close() }
+        catch { throw ManualToolError(message: "\(failure) Closing the recovery file also failed: \(error.localizedDescription). Retain \(destination.path).") }
+        throw ManualToolError(message: "\(failure) Retain the prepared recovery file at \(destination.path).")
+    }
+}
+
+/// Publication replaces one pathname atomically; the pair is not a crash-atomic transaction.
+func publishCoverageExport(_ export: CoverageExport) throws {
+    guard renameat(export.recovery.fileDescriptor, export.replacement.name,
+                   export.parent.fileDescriptor, export.destination.lastPathComponent) == 0 else {
+        throw coverageExportError(operation: "publish coverage output", destination: export.destination, code: errno)
+    }
+}
+
+/// A failed rename never establishes ownership of its destination, so recovery must not mutate it.
+func restoreCoverageExport(exports: [CoverageExport], failedIndex: Int,
+                           publishedIndices: [Int], writeFailure: Error) throws -> Never {
+    var details: [String] = []
+    let failed = exports[failedIndex]
+    do {
+        let current = try coverageExportSnapshot(directory: failed.parent.fileDescriptor, name: failed.destination.lastPathComponent,
+                                                destination: failed.destination, maximumBytes: maximumCoverageBackupBytes)
+        if current?.bytes == failed.original?.bytes {
+            details.append("Failed atomic destination \(failed.destination.path) retains its previous bytes or absence; it was not rewritten.")
+        } else {
+            details.append("Failed atomic destination \(failed.destination.path) changed independently; it was not rewritten.")
+        }
+    } catch { details.append("Cannot inspect failed destination \(failed.destination.path): \(error.localizedDescription) It was not rewritten.") }
+    for index in publishedIndices.reversed() {
+        do { details.append(try restorePublishedCoverageExport(exports[index])) }
+        catch { details.append("Restoration failed at \(exports[index].destination.path): \(error.localizedDescription)") }
+    }
+    for index in exports.indices where index > failedIndex { details.append("Not written: \(exports[index].destination.path).") }
+    details.append("Retain recovery files at \(exports.map { $0.recoveryURL.path }.joined(separator: ", ")).")
+    details.append(contentsOf: exports.flatMap(closeCoverageExport))
+    throw ManualToolError(message: "Coverage export failed while writing \(failed.destination.path): \(writeFailure.localizedDescription) \(details.joined(separator: " "))")
+}
+
+func restorePublishedCoverageExport(_ export: CoverageExport) throws -> String {
+    let current = try coverageExportSnapshot(directory: export.parent.fileDescriptor, name: export.destination.lastPathComponent,
+                                            destination: export.destination, maximumBytes: max(maximumCoverageBackupBytes, export.replacement.bytes.count))
+    guard current?.identity == export.replacement.identity, current?.bytes == export.replacement.bytes else {
+        throw ManualToolError(message: "Destination changed after publication and was not rewritten. Prior bytes remain at \(export.recoveryURL.path).")
+    }
+    try capturePublishedCoverageExport(export)
+    return try restoreCapturedCoverageExport(export)
+}
+
+/// Exclusive capture preserves the actual entry even if it changed after the preceding observation.
+func capturePublishedCoverageExport(_ export: CoverageExport) throws {
+    guard renameatx_np(export.parent.fileDescriptor, export.destination.lastPathComponent,
+                      export.recovery.fileDescriptor, "captured", UInt32(RENAME_EXCL)) == 0 else {
+        throw coverageExportError(operation: "capture published output; prior bytes remain at \(export.recoveryURL.path)", destination: export.destination, code: errno)
+    }
+}
+
+func restoreCapturedCoverageExport(_ export: CoverageExport) throws -> String {
+    let capturedURL = export.recoveryURL.appendingPathComponent("captured")
+    let captured: CoverageExportFile?
+    do {
+        captured = try coverageExportSnapshot(directory: export.recovery.fileDescriptor, name: "captured", destination: capturedURL,
+                                             maximumBytes: max(maximumCoverageBackupBytes, export.replacement.bytes.count))
+    } catch {
+        let failure = error.localizedDescription
+        let returned = returnCapturedCoverageExport(export)
+        throw ManualToolError(message: "Cannot verify the captured destination: \(failure) \(returned)")
+    }
+    guard captured?.identity == export.replacement.identity, captured?.bytes == export.replacement.bytes else {
+        throw ManualToolError(message: "Destination changed during capture. \(returnCapturedCoverageExport(export))")
+    }
+    if let original = export.original {
+        guard renameatx_np(export.recovery.fileDescriptor, original.name,
+                          export.parent.fileDescriptor, export.destination.lastPathComponent, UInt32(RENAME_EXCL)) == 0 else {
+            throw coverageExportError(operation: "restore original exclusively; original and captured bytes remain at \(export.recoveryURL.path)", destination: export.destination, code: errno)
+        }
+        return "Restored previous bytes at \(export.destination.path). Captured export retained at \(capturedURL.path)."
+    }
     var metadata = stat()
-    guard lstat(url.path, &metadata) == 0 else {
+    guard fstatat(export.parent.fileDescriptor, export.destination.lastPathComponent, &metadata, AT_SYMLINK_NOFOLLOW) != 0 else {
+        throw ManualToolError(message: "Another entry now occupies \(export.destination.path); it was not removed. Captured export retained at \(capturedURL.path).")
+    }
+    guard errno == ENOENT else { throw coverageExportError(operation: "confirm original absence; captured export retained at \(capturedURL.path)", destination: export.destination, code: errno) }
+    return "Restored the absence of \(export.destination.path). Captured export retained at \(capturedURL.path)."
+}
+
+private func returnCapturedCoverageExport(_ export: CoverageExport) -> String {
+    if renameatx_np(export.recovery.fileDescriptor, "captured", export.parent.fileDescriptor,
+                    export.destination.lastPathComponent, UInt32(RENAME_EXCL)) == 0 {
+        return "Captured entry returned without overwriting another pathname; original backup remains at \(export.recoveryURL.path)."
+    }
+    let failure = errno
+    return "Captured entry and original backup retained at \(export.recoveryURL.path); exclusive return failed with \(String(cString: strerror(failure))) (errno \(failure))."
+}
+
+func closeCoverageExport(_ export: CoverageExport) -> [String] {
+    var failures: [String] = []
+    do { try export.recovery.close() } catch { failures.append("Cannot close recovery directory \(export.recoveryURL.path): \(error.localizedDescription).") }
+    do { try export.parent.close() } catch { failures.append("Cannot close export directory for \(export.destination.path): \(error.localizedDescription).") }
+    return failures
+}
+
+func removePreparedCoverageExport(_ export: CoverageExport) throws {
+    if let original = export.original {
+        let saved = try coverageExportSnapshot(directory: export.recovery.fileDescriptor, name: original.name,
+                                              destination: export.recoveryURL.appendingPathComponent(original.name), maximumBytes: maximumCoverageBackupBytes)
+        guard saved?.identity == original.identity, saved?.bytes == original.bytes else {
+            throw ManualToolError(message: "Private original backup changed; retain \(export.recoveryURL.path).")
+        }
+        try validateCoverageExportRecoveryDirectory(export)
+        guard unlinkat(export.recovery.fileDescriptor, original.name, 0) == 0 else {
+            throw coverageExportError(operation: "remove completed private backup", destination: export.recoveryURL, code: errno)
+        }
+    }
+    try validateCoverageExportRecoveryDirectory(export)
+    guard unlinkat(export.parent.fileDescriptor, export.recoveryURL.lastPathComponent, AT_REMOVEDIR) == 0 else {
+        throw coverageExportError(operation: "remove empty recovery directory", destination: export.recoveryURL, code: errno)
+    }
+}
+
+/// Namespace verification is a cleanup precondition, not an atomic compare-and-swap guarantee.
+private func validateCoverageExportRecoveryDirectory(_ export: CoverageExport) throws {
+    var opened = stat()
+    guard fstat(export.recovery.fileDescriptor, &opened) == 0 else {
+        throw coverageExportError(operation: "identify opened recovery directory", destination: export.recoveryURL, code: errno)
+    }
+    var named = stat()
+    guard fstatat(export.parent.fileDescriptor, export.recoveryURL.lastPathComponent, &named, AT_SYMLINK_NOFOLLOW) == 0 else {
+        throw coverageExportError(operation: "identify recovery directory pathname before cleanup", destination: export.recoveryURL, code: errno)
+    }
+    guard opened.st_mode & S_IFMT == S_IFDIR, named.st_mode & S_IFMT == S_IFDIR,
+          opened.st_dev == named.st_dev, opened.st_ino == named.st_ino else {
+        throw ManualToolError(message: "Recovery directory pathname changed identity; cleanup was refused at this step. Retain the opened recovery directory and the replacement at \(export.recoveryURL.path).")
+    }
+}
+
+/// Backups are bounded, no-follow reads of regular, materialized files anchored to an opened directory.
+private func coverageExportSnapshot(directory: Int32, name: String, destination: URL, maximumBytes: Int) throws -> CoverageExportFile? {
+    var metadata = stat()
+    guard fstatat(directory, name, &metadata, AT_SYMLINK_NOFOLLOW) == 0 else {
         let code = errno
         if code == ENOENT { return nil }
-        throw ManualToolError(message: "Cannot inspect coverage output \(url.path): \(String(cString: strerror(code))) (errno \(code)).")
+        throw coverageExportError(operation: "inspect coverage output", destination: destination, code: code)
     }
     guard metadata.st_mode & S_IFMT == S_IFREG, metadata.st_flags & UInt32(SF_DATALESS) == 0 else {
-        throw ManualToolError(message: "Coverage output \(url.path) is a directory, symbolic link, special file or cloud-only placeholder. Choose an ordinary writable file destination.")
+        throw ManualToolError(message: "Coverage output \(destination.path) is a directory, symbolic link, special file or cloud-only placeholder. Choose an ordinary writable file destination.")
     }
-    guard metadata.st_size >= 0, metadata.st_size <= Int64(maximumBackupBytes) else {
-        throw ManualToolError(message: "Cannot preserve existing coverage output \(url.path): its size is \(metadata.st_size) bytes, outside the 0...\(maximumBackupBytes)-byte (64 MiB) backup limit. Choose a new export destination.")
+    guard metadata.st_size >= 0, metadata.st_size <= Int64(maximumBytes) else {
+        throw ManualToolError(message: "Cannot preserve existing coverage output \(destination.path): its size is \(metadata.st_size) bytes, outside the 0...\(maximumBytes)-byte backup limit (64 MiB for prior outputs). Choose a new export destination.")
     }
-    let descriptor = open(url.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
-    guard descriptor >= 0 else {
-        let code = errno
-        throw ManualToolError(message: "Cannot open existing coverage output \(url.path) without following links: \(String(cString: strerror(code))) (errno \(code)).")
-    }
+    let descriptor = openat(directory, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+    guard descriptor >= 0 else { throw coverageExportError(operation: "open coverage output without following links", destination: destination, code: errno) }
     let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-    var opened = stat()
-    guard fstat(descriptor, &opened) == 0, opened.st_mode & S_IFMT == S_IFREG,
-          opened.st_flags & UInt32(SF_DATALESS) == 0, opened.st_dev == metadata.st_dev, opened.st_ino == metadata.st_ino else {
-        try handle.close()
-        throw ManualToolError(message: "Existing coverage output \(url.path) changed identity, type or materialization before its prior bytes could be preserved. Neither output file was changed.")
-    }
-    guard opened.st_size >= 0, opened.st_size <= Int64(maximumBackupBytes) else {
-        try handle.close()
-        throw ManualToolError(message: "Cannot preserve existing coverage output \(url.path): its opened size is \(opened.st_size) bytes, outside the 0...\(maximumBackupBytes)-byte (64 MiB) backup limit. Choose a new export destination.")
-    }
     do {
+        var opened = stat()
+        guard fstat(descriptor, &opened) == 0 else { throw coverageExportError(operation: "identify opened output", destination: destination, code: errno) }
+        guard opened.st_mode & S_IFMT == S_IFREG, opened.st_flags & UInt32(SF_DATALESS) == 0,
+              opened.st_dev == metadata.st_dev, opened.st_ino == metadata.st_ino else {
+            throw ManualToolError(message: "Existing coverage output \(destination.path) changed identity, type or materialization before its prior bytes could be preserved.")
+        }
+        guard opened.st_size >= 0, opened.st_size <= Int64(maximumBytes) else {
+            throw ManualToolError(message: "Existing coverage output \(destination.path) opened size is outside the 0...\(maximumBytes)-byte backup limit.")
+        }
         var bytes = Data()
-        while let chunk = try handle.read(upToCount: min(64 * 1024, maximumBackupBytes + 1 - bytes.count)), !chunk.isEmpty {
+        while let chunk = try handle.read(upToCount: min(64 * 1024, maximumBytes + 1 - bytes.count)), !chunk.isEmpty {
             bytes.append(chunk)
-            guard bytes.count <= maximumBackupBytes else {
-                try handle.close()
-                throw ManualToolError(message: "Existing coverage output \(url.path) grew beyond the \(maximumBackupBytes)-byte (64 MiB) backup limit while being read. Choose a new export destination.")
-            }
+            guard bytes.count <= maximumBytes else { throw ManualToolError(message: "Existing coverage output \(destination.path) grew beyond its \(maximumBytes)-byte backup limit.") }
+        }
+        var finished = stat()
+        guard fstat(descriptor, &finished) == 0 else { throw coverageExportError(operation: "verify preserved output", destination: destination, code: errno) }
+        guard finished.st_size == opened.st_size, finished.st_mtimespec.tv_sec == opened.st_mtimespec.tv_sec,
+              finished.st_mtimespec.tv_nsec == opened.st_mtimespec.tv_nsec, finished.st_ctimespec.tv_sec == opened.st_ctimespec.tv_sec,
+              finished.st_ctimespec.tv_nsec == opened.st_ctimespec.tv_nsec else {
+            throw ManualToolError(message: "Existing coverage output \(destination.path) changed while its bytes were being preserved.")
         }
         try handle.close()
-        return bytes
+        return CoverageExportFile(name: name, identity: CoverageExportIdentity(device: opened.st_dev, inode: opened.st_ino), bytes: bytes)
+    } catch {
+        let failure = error.localizedDescription
+        do { try handle.close() }
+        catch { throw ManualToolError(message: "\(failure) Closing the prior output failed: \(error.localizedDescription).") }
+        throw ManualToolError(message: "Cannot preserve existing coverage output \(destination.path): \(failure)")
     }
-    catch { throw ManualToolError(message: "Cannot preserve existing coverage output \(url.path): \(error.localizedDescription)") }
 }
 
 /// Source filters depend on inventory changes, not high-frequency progress or search updates.
