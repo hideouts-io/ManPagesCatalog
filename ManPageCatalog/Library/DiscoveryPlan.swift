@@ -7,16 +7,35 @@ struct DiscoveryPlan: Codable, Sendable {
     let exclusions: [DiscoveryIssue]
     /// Explicitly skipped subtrees, including resolved symlink and whole-file manual alias targets.
     let traversalExclusions: [DiscoveryIssue]?
+    /// A saved physical traversal boundary for explicitly confined selected-root measurements.
+    let traversalRoots: [URL]?
+    /// Mounted filesystem roots excluded by physical identity, refreshed within the current boot.
+    let excludedMountedVolumes: [URL]?
 
     init(roots: [URL], allowedNetworkRoots: [URL], exclusions: [DiscoveryIssue]) {
-        self.init(roots: roots, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions, traversalExclusions: [])
+        self.init(roots: roots, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions,
+                  traversalExclusions: [], traversalRoots: nil)
     }
 
     init(roots: [URL], allowedNetworkRoots: [URL], exclusions: [DiscoveryIssue], traversalExclusions: [DiscoveryIssue]) {
+        self.init(roots: roots, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions,
+                  traversalExclusions: traversalExclusions, traversalRoots: nil)
+    }
+
+    init(roots: [URL], allowedNetworkRoots: [URL], exclusions: [DiscoveryIssue],
+         traversalExclusions: [DiscoveryIssue], traversalRoots: [URL]?) {
+        self.init(roots: roots, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions,
+                  traversalExclusions: traversalExclusions, traversalRoots: traversalRoots, excludedMountedVolumes: nil)
+    }
+
+    init(roots: [URL], allowedNetworkRoots: [URL], exclusions: [DiscoveryIssue],
+         traversalExclusions: [DiscoveryIssue], traversalRoots: [URL]?, excludedMountedVolumes: [URL]?) {
         self.roots = roots
         self.allowedNetworkRoots = allowedNetworkRoots
         self.exclusions = exclusions
         self.traversalExclusions = traversalExclusions
+        self.traversalRoots = traversalRoots
+        self.excludedMountedVolumes = excludedMountedVolumes
     }
 }
 
