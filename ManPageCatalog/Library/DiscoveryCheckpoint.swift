@@ -156,6 +156,7 @@ actor DiscoveryCheckpointFile {
             guard saved.version == 2, saved.roots.map(\.root) == saved.plan.roots,
                   saved.plan.roots.allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") }),
                   saved.plan.allowedNetworkRoots.allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") }),
+                  saved.plan.traversalRoots.map({ $0 == saved.plan.roots && !$0.isEmpty }) ?? true,
                   saved.plan.exclusions.allSatisfy({ $0.path.hasPrefix("/") && !$0.path.contains("\0") && !$0.reason.isEmpty && $0.kind != .pending && $0.directoryReference == nil }),
                   (saved.plan.traversalExclusions ?? []).allSatisfy({ $0.path.hasPrefix("/") && !$0.path.contains("\0") && !$0.reason.isEmpty && $0.kind == .excluded && $0.directoryReference == nil }),
                   saved.peakPending.map({ $0 >= saved.pendingCount }) ?? false,

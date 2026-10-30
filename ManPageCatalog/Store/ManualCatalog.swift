@@ -75,6 +75,12 @@ func manualInput(source: URL) async throws -> ManualInput {
 }
 
 func validatedManualInput(source: URL, validate: @Sendable (URL) throws -> Void) async throws -> ManualInput {
+    try await validatedManualInput(source: source, validate: validate, validateCandidate: { _ in })
+}
+
+func validatedManualInput(source: URL, validate: @Sendable (URL) throws -> Void,
+                          validateCandidate: @Sendable (URL) throws -> Void) async throws -> ManualInput {
+    try validateCandidate(source)
     var current = source.resolvingSymlinksInPath()
     var visited = Set<String>()
     var chain: [URL] = []
@@ -100,7 +106,21 @@ func validatedManualInput(source: URL, validate: @Sendable (URL) throws -> Void)
         let relative = [directory.deletingLastPathComponent().appendingPathComponent(target), directory.appendingPathComponent(target)]
         let candidates = target.hasPrefix("/") ? [URL(fileURLWithPath: target)] : relative
         let expanded = candidates.flatMap { url in [url, url.appendingPathExtension("gz"), url.appendingPathExtension("bz2"), url.appendingPathExtension("Z")] }
-        guard let resolved = expanded.first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
+        var resolved: URL?
+        var rejected: Error?
+        for candidate in expanded {
+            do { try validateCandidate(candidate) }
+            catch {
+                if rejected == nil { rejected = error }
+                continue
+            }
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                resolved = candidate
+                break
+            }
+        }
+        guard let resolved else {
+            if let rejected { throw rejected }
             throw ManualToolError(message: "Manual alias \(current.path) refers to missing target \(target). Restore its documentation package.")
         }
         current = resolved.standardizedFileURL.resolvingSymlinksInPath()

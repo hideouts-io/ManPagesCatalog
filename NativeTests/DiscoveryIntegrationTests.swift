@@ -1030,6 +1030,57 @@ final class DiscoveryIntegrationTests: XCTestCase {
         return (partial, try XCTUnwrap(loaded))
     }
 
+    func testInitialManualSourceRespectsCandidateBoundaryAndExistingDiscoveryEntryPoint() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("InitialManualBoundary-\(UUID().uuidString)")
+        let allowed = directory.appendingPathComponent("allowed")
+        try FileManager.default.createDirectory(at: allowed, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned initial-source fixture: \(error)") }
+        }
+        let installed = URL(fileURLWithPath: "/usr/share/man/man1/ls.1")
+        let outside = directory.appendingPathComponent("outside.1")
+        try FileManager.default.copyItem(at: installed, to: outside)
+        let roots = [DiscoveryTraversalRoot(path: allowed.path, resolvedPath: allowed.resolvingSymlinksInPath().path)]
+        do {
+            _ = try await validatedManualInput(source: outside, validate: { target in try requireMaterializedManual(target) },
+                validateCandidate: { candidate in
+                    _ = try requireDiscoveryPathBoundary(url: candidate, exclusions: [], traversalRoots: roots)
+                })
+            XCTFail("The candidate boundary must reject the initial source before reading its contents")
+        } catch let error as DiscoveryAccessError {
+            XCTAssertEqual(error.kind, .excluded)
+            XCTAssertTrue(error.localizedDescription.contains("Path leaves the selected scan roots"))
+        }
+        guard geteuid() != 0, chmod(outside.path, 0) == 0, access(outside.path, R_OK) != 0 else {
+            throw ManualToolError(message: "Cannot deny reads on the owned outside-root source fixture.")
+        }
+        let unreadable = try materializedFileState(outside)
+        do {
+            _ = try await discoveredManual(file: outside, root: allowed, state: unreadable,
+                allowedNetworkRoots: [], exclusions: [], traversalRoots: roots)
+            XCTFail("Direct discovery must reject an outside source before attempting its unreadable prefix")
+        } catch let error as DiscoveryAccessError {
+            XCTAssertEqual(error.kind, .excluded)
+            XCTAssertTrue(error.localizedDescription.contains("Path leaves the selected scan roots"))
+        }
+        guard chmod(outside.path, 0o600) == 0 else {
+            throw ManualToolError(message: "Cannot restore owned outside-source fixture permissions.")
+        }
+        let inside = allowed.appendingPathComponent("ls.1")
+        try FileManager.default.copyItem(at: installed, to: inside)
+        let state = try materializedFileState(inside)
+        let discovered = try await discoveredManual(file: inside, root: allowed, state: state,
+            allowedNetworkRoots: [], exclusions: [])
+        let bounded = try await discoveredManual(file: inside, root: allowed, state: state,
+            allowedNetworkRoots: [], exclusions: [], traversalRoots: roots)
+        let existing = try XCTUnwrap(discovered)
+        let confined = try XCTUnwrap(bounded)
+        XCTAssertEqual(existing.name, "ls")
+        XCTAssertNil(existing.problem)
+        XCTAssertEqual(existing.id, confined.id)
+    }
+
     private func finished(_ store: LibraryStore) async throws {
         for _ in 0..<1000 {
             if await !store.isIndexing { return }
