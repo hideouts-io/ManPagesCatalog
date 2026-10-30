@@ -322,9 +322,42 @@ final class CatalogIntegrationTests: XCTestCase {
             return 0;
         }
         """#.write(to: source, atomically: true, encoding: .utf8)
-        _ = try await runManualTool(executable: URL(fileURLWithPath: "/usr/bin/clang"),
-                                    arguments: ["-Wall", "-Wextra", "-Werror", source.path, "-o", executable.path], directory: directory, input: nil)
+        let toolchain = try toolchainForLoadedXCTest()
+        _ = try await runManualTool(executable: toolchain.compiler,
+                                    arguments: ["-isysroot", toolchain.sdk.path, "-Wall", "-Wextra", "-Werror", source.path, "-o", executable.path], directory: directory, input: nil)
         return executable
+    }
+
+    /// Use the compiler and SDK beside loaded XCTest; system shims can select another Xcode and incompatible frameworks.
+    private func toolchainForLoadedXCTest() throws -> (compiler: URL, sdk: URL) {
+        let framework: URL = Bundle(for: XCTestCase.self).bundleURL.resolvingSymlinksInPath()
+        guard framework.isFileURL, framework.pathExtension == "framework" else {
+            throw ManualToolError(message: "Cannot compile the owned output fixture: loaded XCTest has an unexpected framework location at \(framework.path).")
+        }
+        var container: URL = framework
+        while container.path != "/" {
+            if container.pathExtension == "app", Bundle(url: container)?.bundleIdentifier == "com.apple.dt.Xcode" {
+                let developer: URL = container.appendingPathComponent("Contents/Developer", isDirectory: true).resolvingSymlinksInPath()
+                let compiler: URL = developer.appendingPathComponent("Toolchains/XcodeDefault.xctoolchain/usr/bin/clang").resolvingSymlinksInPath()
+                let values: URLResourceValues
+                do { values = try compiler.resourceValues(forKeys: [.isRegularFileKey]) }
+                catch { throw ManualToolError(message: "Cannot inspect the compiler for loaded XCTest at \(compiler.path): \(error.localizedDescription)") }
+                guard compiler.path.hasPrefix(developer.path + "/Toolchains/XcodeDefault.xctoolchain/"),
+                      values.isRegularFile == true, FileManager.default.isExecutableFile(atPath: compiler.path) else {
+                    throw ManualToolError(message: "Cannot compile the owned output fixture: loaded XCTest's Xcode has no executable default-toolchain compiler at \(compiler.path).")
+                }
+                let sdk: URL = developer.appendingPathComponent("Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk", isDirectory: true).resolvingSymlinksInPath()
+                let sdkValues: URLResourceValues
+                do { sdkValues = try sdk.resourceValues(forKeys: [.isDirectoryKey]) }
+                catch { throw ManualToolError(message: "Cannot inspect the macOS SDK for loaded XCTest at \(sdk.path): \(error.localizedDescription)") }
+                guard sdk.path.hasPrefix(developer.path + "/Platforms/MacOSX.platform/Developer/SDKs/"), sdkValues.isDirectory == true else {
+                    throw ManualToolError(message: "Cannot compile the owned output fixture: loaded XCTest's Xcode has no macOS SDK at \(sdk.path).")
+                }
+                return (compiler: compiler, sdk: sdk)
+            }
+            container = container.deletingLastPathComponent()
+        }
+        throw ManualToolError(message: "Cannot compile the owned output fixture: loaded XCTest at \(framework.path) is not inside a validated Xcode application.")
     }
 
     private func readyManualOutputWriter(task: Task<ManualProcessResult, Error>, receipt: URL) async throws -> (processID: Int32, captureDirectory: URL) {
