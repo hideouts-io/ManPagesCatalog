@@ -88,7 +88,8 @@ func continuousDiscoveryBootReference() throws -> Date {
 }
 
 func newDiscoveryCheckpoint(plan: DiscoveryPlan, title: String) throws -> DiscoveryCheckpoint {
-    DiscoveryCheckpoint(version: 2, title: title, started: Date(), bootReference: try continuousDiscoveryBootReference(), bootReferenceClock: .continuous, plan: plan, updated: Date(), roots: plan.roots.map {
+    _ = try discoveryExcludedPaths(plan: plan)
+    return DiscoveryCheckpoint(version: 2, title: title, started: Date(), bootReference: try continuousDiscoveryBootReference(), bootReferenceClock: .continuous, plan: plan, updated: Date(), roots: plan.roots.map {
         DiscoveryRootState(root: $0, pending: [$0], directoriesInProgress: [], directories: 0, files: 0, manuals: 0, issues: [])
     }, visited: [:], visitedRootIndices: [:], pages: [], peakPending: plan.roots.count)
 }
@@ -157,6 +158,7 @@ actor DiscoveryCheckpointFile {
                   saved.plan.roots.allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") }),
                   saved.plan.allowedNetworkRoots.allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") }),
                   saved.plan.traversalRoots.map({ $0 == saved.plan.roots && !$0.isEmpty }) ?? true,
+                  (saved.plan.excludedMountedVolumes ?? []).allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") && !$0.path.contains("\0") }),
                   saved.plan.exclusions.allSatisfy({ $0.path.hasPrefix("/") && !$0.path.contains("\0") && !$0.reason.isEmpty && $0.kind != .pending && $0.directoryReference == nil }),
                   (saved.plan.traversalExclusions ?? []).allSatisfy({ $0.path.hasPrefix("/") && !$0.path.contains("\0") && !$0.reason.isEmpty && $0.kind == .excluded && $0.directoryReference == nil }),
                   saved.peakPending.map({ $0 >= saved.pendingCount }) ?? false,
@@ -167,6 +169,7 @@ actor DiscoveryCheckpointFile {
                   }) else { throw ManualToolError(message: "Checkpoint has invalid roots, counters, or version.") }
             try validateDiscoveryCursors(saved)
             try validateManualPages(saved.pages)
+            _ = try discoveryExcludedPaths(plan: saved.plan)
             return saved
         } catch {
             throw ManualToolError(message: "Cannot resume \(url.path): \(error.localizedDescription) Start a fresh scan to replace this checkpoint. Your existing library is retained.")

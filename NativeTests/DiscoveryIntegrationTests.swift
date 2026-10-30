@@ -1079,6 +1079,96 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertEqual(existing.name, "ls")
         XCTAssertNil(existing.problem)
         XCTAssertEqual(existing.id, confined.id)
+        let alias = directory.appendingPathComponent("selected-root-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: allowed)
+        let aliasSource = alias.appendingPathComponent("ls.1")
+        let aliasRoots = [DiscoveryTraversalRoot(path: alias.path, resolvedPath: allowed.resolvingSymlinksInPath().path)]
+        let aliased = try await discoveredManual(file: aliasSource, root: alias, state: materializedFileState(aliasSource),
+            allowedNetworkRoots: [], exclusions: [], traversalRoots: aliasRoots)
+        let aliasPage = try XCTUnwrap(aliased)
+        XCTAssertEqual(aliasPage.id, existing.id)
+        XCTAssertNil(aliasPage.problem)
+    }
+
+    func testPhysicalMountedExclusionRejectsDataFirmlinkAndMissingCandidates() async throws {
+        let data = URL(fileURLWithPath: "/System/Volumes/Data")
+        let users = URL(fileURLWithPath: "/Users")
+        let dataUsers = data.appendingPathComponent("Users")
+        let system = URL(fileURLWithPath: "/")
+        let dataIdentity = try discoveryFilesystemIdentity(url: data)
+        XCTAssertEqual(try discoveryFilesystemIdentity(url: users), dataIdentity)
+        XCTAssertEqual(try discoveryFilesystemIdentity(url: dataUsers), dataIdentity)
+        XCTAssertNotEqual(try discoveryFilesystemIdentity(url: system), dataIdentity)
+        var usersMetadata = stat()
+        var dataUsersMetadata = stat()
+        guard stat(users.path, &usersMetadata) == 0, stat(dataUsers.path, &dataUsersMetadata) == 0 else {
+            throw ManualToolError(message: "Cannot inspect Data/Users firmlink metadata for the owned boundary integration (errno \(errno)).")
+        }
+        XCTAssertEqual(usersMetadata.st_dev, dataUsersMetadata.st_dev)
+        XCTAssertEqual(usersMetadata.st_ino, dataUsersMetadata.st_ino)
+        let plan = DiscoveryPlan(roots: [system], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [], traversalRoots: nil, excludedMountedVolumes: [data])
+        let exclusions = try discoveryExcludedPaths(plan: plan)
+        XCTAssertFalse(exclusions.isEmpty)
+        XCTAssertNoThrow(try requireDiscoveryPathBoundary(url: system, exclusions: exclusions, traversalRoots: nil))
+        let missing = users.appendingPathComponent("ManPagesCatalog-owned-missing-\(UUID().uuidString)").appendingPathComponent("missing.1")
+        for candidate in [users, missing] {
+            XCTAssertThrowsError(try requireDiscoveryPathBoundary(url: candidate, exclusions: exclusions, traversalRoots: nil)) { error in
+                guard let access = error as? DiscoveryAccessError else { return XCTFail("Expected a classified excluded filesystem: \(error)") }
+                XCTAssertEqual(access.kind, .excluded)
+                XCTAssertTrue(access.message.contains("Explicitly excluded mounted volume"), access.message)
+            }
+        }
+        do {
+            _ = try await validatedManualInput(source: missing, validate: { try requireMaterializedManual($0) },
+                validateCandidate: { _ = try requireDiscoveryPathBoundary(url: $0, exclusions: exclusions, traversalRoots: nil) })
+            XCTFail("A missing Data-firmlink candidate must be excluded before the alias existence check.")
+        } catch let error as DiscoveryAccessError {
+            XCTAssertEqual(error.kind, .excluded)
+            XCTAssertTrue(error.message.contains("Explicitly excluded mounted volume"), error.message)
+        } catch { XCTFail("The missing Data-firmlink candidate reached its existence check: \(error)") }
+        let legacy = DiscoveryPlan(roots: [system], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [DiscoveryIssue(path: data.path, kind: .excluded, reason: "Legacy path-only scope")])
+        let decoded = try JSONDecoder().decode(DiscoveryPlan.self, from: JSONEncoder().encode(legacy))
+        XCTAssertNil(decoded.excludedMountedVolumes)
+        XCTAssertNoThrow(try requireDiscoveryPathBoundary(url: users, exclusions: discoveryExcludedPaths(plan: decoded), traversalRoots: nil),
+            "An absent physical-policy field retains the earlier path-only scope.")
+    }
+
+    func testMissingOrUnmountedExcludedVolumeRefusesResumeWithoutChangingBytes() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ExcludedMountResume-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned mount-policy checkpoint fixture: \(error)") }
+        }
+        let nonmount = directory.appendingPathComponent("ordinary-directory")
+        try FileManager.default.createDirectory(at: nonmount, withIntermediateDirectories: false)
+        let marker = directory.appendingPathComponent("retained-marker")
+        let markerBytes = Data("owned mount-policy preservation marker\n".utf8)
+        try markerBytes.write(to: marker)
+        let legacy = try newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: [directory], allowedNetworkRoots: [], exclusions: []), title: "Owned mount-policy fixture")
+        let remote = try XCTUnwrap(URL(string: "file://example.invalid/System/Volumes/Data"))
+        for excluded in [nonmount, directory.appendingPathComponent("missing-mounted-root"), remote] {
+            let plan = DiscoveryPlan(roots: legacy.plan.roots, allowedNetworkRoots: [], exclusions: [],
+                traversalExclusions: [], traversalRoots: nil, excludedMountedVolumes: [excluded])
+            XCTAssertThrowsError(try newDiscoveryCheckpoint(plan: plan, title: "Invalid excluded mount"))
+            let invalid = DiscoveryCheckpoint(version: legacy.version, title: legacy.title, started: legacy.started,
+                bootReference: legacy.bootReference, bootReferenceClock: legacy.bootReferenceClock, plan: plan, updated: legacy.updated,
+                roots: legacy.roots, visited: legacy.visited, visitedRootIndices: legacy.visitedRootIndices,
+                pages: legacy.pages, peakPending: legacy.peakPending)
+            let checkpoint = directory.appendingPathComponent("checkpoint.json")
+            let bytes = try JSONEncoder().encode(invalid)
+            try bytes.write(to: checkpoint)
+            do {
+                _ = try await DiscoveryCheckpointFile(url: checkpoint).load()
+                XCTFail("A missing mount or an ordinary directory must not inherit its parent's excluded filesystem identity.")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("mount"), error.localizedDescription)
+            }
+            XCTAssertEqual(try Data(contentsOf: checkpoint), bytes)
+            XCTAssertEqual(try Data(contentsOf: marker), markerBytes)
+        }
     }
 
     private func finished(_ store: LibraryStore) async throws {

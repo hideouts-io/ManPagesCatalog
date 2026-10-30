@@ -271,42 +271,31 @@ func benchmarkWholeFilesystemPlan(output: URL, excludedMountedVolumes: [URL]) th
 /// Persist exclusions so traversal, aliases and later indexing keep the same scope on resume.
 func benchmarkScopedPlan(plan: DiscoveryPlan, output: URL, excludedMountedVolumes: [URL]) throws -> DiscoveryPlan {
     let physicalOutput = output.resolvingSymlinksInPath()
-    if excludedMountedVolumes.isEmpty {
+    if excludedMountedVolumes.isEmpty && (plan.excludedMountedVolumes ?? []).isEmpty {
         return DiscoveryPlan(roots: plan.roots, allowedNetworkRoots: plan.allowedNetworkRoots, exclusions: plan.exclusions,
             traversalExclusions: (plan.traversalExclusions ?? []) + [benchmarkOutputExclusion(output: output)],
-            traversalRoots: plan.traversalRoots)
+            traversalRoots: plan.traversalRoots, excludedMountedVolumes: plan.excludedMountedVolumes)
     }
-    guard let mounted = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeIsLocalKey], options: []) else {
-        throw ManualToolError(message: "Cannot list mounted volumes to validate explicit scan exclusions.")
+    let excludedVolumes = ((plan.excludedMountedVolumes ?? []) + excludedMountedVolumes).map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+    let mountedExclusions = try discoveryExcludedMountedPaths(volumes: excludedVolumes)
+    do { _ = try requireDiscoveryPathBoundary(url: physicalOutput, exclusions: mountedExclusions, traversalRoots: nil) }
+    catch let error as DiscoveryAccessError where error.kind == .excluded {
+        throw ManualToolError(message: "Benchmark output \(output.path) cannot be inside an excluded mounted volume: \(error.localizedDescription)")
     }
-    let mountedPaths = Set(mounted.map { $0.resolvingSymlinksInPath().path })
-    let excludedPaths = excludedMountedVolumes.map { $0.resolvingSymlinksInPath().path }
-    guard Set(excludedPaths).count == excludedPaths.count else {
-        throw ManualToolError(message: "Each excluded mounted volume must be supplied only once.")
-    }
-    for path in excludedPaths {
-        guard path != "/", mountedPaths.contains(path),
-              try URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeIsLocalKey]).volumeIsLocal == true else {
-            throw ManualToolError(message: "Cannot exclude \(path): it is not a mounted local-volume root. Select a mounted local volume, not an arbitrary folder.")
-        }
-        guard !excludedPaths.contains(where: { $0 != path && pathContains(root: $0, path: path) }) else {
-            throw ManualToolError(message: "Cannot exclude \(path) separately: an excluded parent mount already covers it.")
-        }
-        guard !pathContains(root: path, path: physicalOutput.path) else {
-            throw ManualToolError(message: "Benchmark output \(output.path) cannot be inside excluded mounted volume \(path).")
-        }
-    }
-    let roots = plan.roots.filter { root in
-        !excludedPaths.contains { pathContains(root: $0, path: root.resolvingSymlinksInPath().path) }
+    let roots = try plan.roots.filter { root in
+        do {
+            _ = try requireDiscoveryPathBoundary(url: root, exclusions: mountedExclusions, traversalRoots: nil)
+            return true
+        } catch let error as DiscoveryAccessError where error.kind == .excluded { return false }
     }
     guard !roots.isEmpty else {
         throw ManualToolError(message: "All selected scan roots are inside explicitly excluded mounted volumes. Select at least one root outside those volumes.")
     }
-    let excluded = excludedPaths.map { DiscoveryIssue(path: $0, kind: .excluded,
+    let excluded = excludedVolumes.map { DiscoveryIssue(path: $0.path, kind: .excluded,
         reason: "Explicitly excluded mounted volume and its nested mounts from this scoped measurement.") }
     return DiscoveryPlan(roots: roots, allowedNetworkRoots: plan.allowedNetworkRoots, exclusions: plan.exclusions,
         traversalExclusions: (plan.traversalExclusions ?? []) + excluded + [benchmarkOutputExclusion(output: output)],
-        traversalRoots: plan.traversalRoots == nil ? nil : roots)
+        traversalRoots: plan.traversalRoots == nil ? nil : roots, excludedMountedVolumes: excludedVolumes)
 }
 
 func benchmarkOutputExclusion(output: URL) -> DiscoveryIssue {
@@ -337,6 +326,11 @@ func prepareBenchmarkOutput(plan: DiscoveryPlan, title: String, output: URL, sta
 
 /// Resuming an overlapping run requires the exact canonical output exclusion persisted with its plan.
 func validateBenchmarkOutputScope(plan: DiscoveryPlan, output: URL) throws {
+    let mountedExclusions = try discoveryExcludedMountedPaths(volumes: plan.excludedMountedVolumes ?? [])
+    do { _ = try requireDiscoveryPathBoundary(url: output, exclusions: mountedExclusions, traversalRoots: nil) }
+    catch let error as DiscoveryAccessError where error.kind == .excluded {
+        throw ManualToolError(message: "Benchmark output \(output.path) cannot be inside an excluded mounted volume: \(error.localizedDescription)")
+    }
     let physicalOutput = output.resolvingSymlinksInPath().path
     let overlapping = plan.roots.contains { pathContains(root: $0.resolvingSymlinksInPath().path, path: physicalOutput) }
     guard !plan.roots.contains(where: { pathContains(root: physicalOutput, path: $0.resolvingSymlinksInPath().path) }),
@@ -354,7 +348,7 @@ func benchmarkResumeCheckpoint(checkpoint: DiscoveryCheckpoint, output: URL) thr
     if existing.contains(where: { $0.path == exclusion.path }) { return checkpoint }
     let plan = DiscoveryPlan(roots: checkpoint.plan.roots, allowedNetworkRoots: checkpoint.plan.allowedNetworkRoots,
         exclusions: checkpoint.plan.exclusions, traversalExclusions: existing + [exclusion],
-        traversalRoots: checkpoint.plan.traversalRoots)
+        traversalRoots: checkpoint.plan.traversalRoots, excludedMountedVolumes: checkpoint.plan.excludedMountedVolumes)
     return DiscoveryCheckpoint(version: checkpoint.version, title: checkpoint.title, started: checkpoint.started,
         bootReference: checkpoint.bootReference, bootReferenceClock: checkpoint.bootReferenceClock, plan: plan, updated: checkpoint.updated, roots: checkpoint.roots,
         visited: checkpoint.visited, visitedRootIndices: checkpoint.visitedRootIndices,
@@ -388,7 +382,7 @@ func benchmarkOperation(initial: DiscoveryCheckpoint, previous: [ManualPage], fi
     await recorder?.beginIndexing(total: pending.count)
     let indexingBegan = ProcessInfo.processInfo.systemUptime
     do { try await benchmarkIndex(pages: pending, index: index, progress: progress, recorder: recorder,
-        allowedNetworkRoots: initial.plan.allowedNetworkRoots, exclusions: discoveryExcludedPaths(plan: initial.plan),
+        allowedNetworkRoots: initial.plan.allowedNetworkRoots, exclusions: try discoveryExcludedPaths(plan: initial.plan),
         traversalRoots: discoveryTraversalRoots(plan: initial.plan)) }
     catch {
         await progress.finishIndexing(seconds: ProcessInfo.processInfo.systemUptime - indexingBegan)

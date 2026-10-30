@@ -90,6 +90,35 @@ def verify_legacy_resume(binary: Path, output: Path, owned: Path) -> None:
         assert index.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
+def verify_selected_symlink_root(binary: Path, outer: Path, baseline: Path, owned: Path) -> None:
+    alias = owned / "selected-root-alias"
+    alias.symlink_to(outer, target_is_directory=True)
+    output = owned / "selected-alias-output"
+    scan = run(binary, ["scan", "--root", str(alias), "--output", str(output),
+                        "--cancel-seconds", "0", "--telemetry", "disabled", "--cache-state", "unknown",
+                        "--stay-within-roots"])
+    if scan.returncode != 0:
+        raise RuntimeError(f"Selected symlink root scan exited {scan.returncode}: {scan.stderr[-1200:]}")
+    result = json.loads((output / "result.json").read_text(encoding="utf-8"))
+    assert result["state"] == "completed" and result["pendingLocations"] == 0
+    assert result["indexedManuals"] == 2 and result["indexFailed"] == 0
+    checkpoint = json.loads((output / "checkpoint.json").read_text(encoding="utf-8"))
+    assert [file_path(value) for value in checkpoint["plan"]["roots"]] == [str(alias)]
+    inventory = json.loads((output / "inventory.json").read_text(encoding="utf-8"))
+    expected = json.loads((baseline / "inventory.json").read_text(encoding="utf-8"))
+    assert {(page["fingerprint"], page["section"], page["language"]) for page in inventory["pages"]} == {
+        (page["fingerprint"], page["section"], page["language"]) for page in expected["pages"]}
+    sources = {Path(file_path(location["source"])).resolve()
+               for page in inventory["pages"] for location in page["locations"]}
+    assert sources == {(outer / name).resolve() for name in ["man1/ls.1", "man1/inside_alias.1",
+                                                            "man1/relative_alias.1", "nested/man1/cat.1"]}
+    issues = [issue for record in inventory["coverage"] for issue in record["issues"]]
+    for name in ["outside_link", "man1/outside_link.1", "man1/outside_alias.1", "man1/outside_missing_alias.1"]:
+        assert any(issue["path"] == str(alias / name) and issue["kind"] == "excluded" for issue in issues), name
+    with sqlite3.connect(output / "search.sqlite") as index:
+        assert index.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
 def main(arguments: list[str]) -> int:
     if len(arguments) != 1:
         raise ValueError("Usage: test_root_containment.py /absolute/path/to/discovery-benchmark")
@@ -150,6 +179,7 @@ def main(arguments: list[str]) -> int:
         assert all(hashlib.sha256((invalid / name).read_bytes()).hexdigest() == digest
                    for name, digest in retained.items())
         verify_legacy_resume(binary, output, owned)
+        verify_selected_symlink_root(binary, outer, output, owned)
         print("Selected-root containment passed: nested-root ownership, two indexed manuals, classified existing and missing alias escapes, relative alias alternative, valid SQLite, saved-scope resume, byte-preserving invalid-scope refusal, and legacy resume without invented containment or clock changes.")
     except Exception:
         print(f"Retained failed root-containment fixture and reports at {owned}", file=sys.stderr)
