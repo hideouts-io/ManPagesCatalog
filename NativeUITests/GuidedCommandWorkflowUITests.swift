@@ -7,19 +7,14 @@ import Darwin
 /// Uses the launched application and XCTest's native UI driver for alert focus and dismissal.
 final class GuidedCommandWorkflowUITests: XCTestCase {
     func testCancellingAndApprovingDraftReplacementUseStableControls() throws {
+        let application = XCUIApplication()
+        guard application.state == .notRunning else {
+            throw WorkflowTestError(message: "The target application is already running. Preserve that instance and close it before this isolated UI test.")
+        }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("GuidedCommandUITests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        let application = XCUIApplication()
         var ownsLaunch = false
-        defer {
-            if ownsLaunch { application.terminate() }
-            if !ownsLaunch || application.state == .notRunning {
-                do { try FileManager.default.removeItem(at: directory) }
-                catch { XCTFail("Cannot clean the owned command UI test library: \(error)") }
-            } else {
-                XCTFail("The owned application did not terminate; its UUID test library remains at \(directory.path).")
-            }
-        }
+        registerOwnedApplicationCleanup(application: application, directory: directory, ownsLaunch: { ownsLaunch })
         try seedInstalledManual(directory: directory)
         let marker = directory.appendingPathComponent("must remain absent")
         let originalText = "/usr/bin/printf '%s\\n' 'keep this exact draft' > \(quotedShellWord(marker.path))\n"
@@ -247,19 +242,14 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
 
     /// Each launch owns only its UUID library and refuses to terminate a preexisting application.
     private func withOwnedApplication(_ workflow: (XCUIApplication, URL) throws -> Void) throws {
+        let application = XCUIApplication()
+        guard application.state == .notRunning else {
+            throw WorkflowTestError(message: "The target application is already running. Preserve that instance and close it before this isolated UI test.")
+        }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("GuidedCommandUITests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        let application = XCUIApplication()
         var ownsLaunch = false
-        defer {
-            if ownsLaunch { application.terminate() }
-            if !ownsLaunch || application.state == .notRunning {
-                do { try FileManager.default.removeItem(at: directory) }
-                catch { XCTFail("Cannot clean the owned command UI test library: \(error)") }
-            } else {
-                XCTFail("The owned application did not terminate; its UUID test library remains at \(directory.path).")
-            }
-        }
+        registerOwnedApplicationCleanup(application: application, directory: directory, ownsLaunch: { ownsLaunch })
         try seedInstalledManual(directory: directory)
         application.launchArguments = ["-libraryDirectory", directory.path]
         application.launchEnvironment = ["MANPATH": "/var/empty", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
@@ -273,6 +263,18 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
             throw WorkflowTestError(message: "The owned application did not start for its native command UI workflow; state \(launchState.rawValue).")
         }
         try workflow(application, directory)
+    }
+
+    private func registerOwnedApplicationCleanup(application: XCUIApplication, directory: URL, ownsLaunch: @escaping () -> Bool) {
+        addTeardownBlock { () throws -> Void in
+            let launched = ownsLaunch()
+            if launched && application.state != .notRunning { application.terminate() }
+            guard !launched || application.state == .notRunning else {
+                throw WorkflowTestError(message: "The owned application did not terminate; its UUID test library remains at \(directory.path).")
+            }
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { throw WorkflowTestError(message: "Cannot clean the owned command UI test library: \(error.localizedDescription)") }
+        }
     }
 
     private func replaceText(_ text: String, identifier: String, application: XCUIApplication) throws {

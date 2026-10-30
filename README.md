@@ -282,7 +282,7 @@ Drafts, browsing history, and terminal scrollback remain in memory. The app does
 | System PDF formatting + PDFKit | PDF generation and validation |
 | SwiftTerm **1.18.0** | Embedded AppKit terminal and PTY connection |
 
-Required system tools are `/usr/bin/manpath`, `/usr/bin/mandoc`, `/usr/bin/col`, `/usr/bin/gzip`, and `/usr/bin/bzip2`. The optional terminal uses `/bin/zsh`. Formatting tools run directly with bounded concurrency, output limits, cancellation, and a 30-second per-process deadline; source text is not evaluated by a shell. Missing tools produce explicit errors.
+Required system tools are `/usr/bin/manpath`, `/usr/bin/mandoc`, `/usr/bin/col`, `/usr/bin/gzip`, and `/usr/bin/bzip2`. The optional terminal uses `/bin/zsh`. Formatting tools run directly with bounded concurrency, separate 64 MiB limits for standard output and diagnostics, cancellation, and a 30-second per-process deadline; source text is not evaluated by a shell. File-descriptor sizes are checked during execution and before loading either stream. Polling can permit temporary disk overshoot; an exceeded limit fails explicitly instead of returning partial output as success. Capture cleanup failures retain the original operation error when both occur. Missing tools produce explicit errors.
 
 SwiftPM pins SwiftTerm and records resolved packages. The app includes its shader resource bundle and MIT notice. SwiftTerm’s package also resolves ArgumentParser for an upstream command-line target; that target is not part of this app. The app currently uses Swift 5 language mode. Deployment targets alone do not establish runtime compatibility with every older macOS release.
 
