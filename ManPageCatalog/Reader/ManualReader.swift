@@ -41,6 +41,9 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
     @Published private(set) var findGeneration: UUID?
     @Published private(set) var findOperation = InteractionOperation.findNext
     private(set) var pendingFindCallbacks = 0
+#if DEBUG
+    var onReaderPositionRead: (@MainActor () async -> Void)?
+#endif
     var onReference: ((String, String) -> Void)?
     private var previous: [ReaderVisit] = []
     private var following: [ReaderVisit] = []
@@ -66,6 +69,7 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
 
     func open(page: ManualPage, context: BrowseContext) async {
         let token = UUID()
+        openRequest = token
         InteractionDiagnostics.started(operation: .reader, generation: token, query: context.query, documentID: page.id)
         if !page.fingerprint.isEmpty && self.page?.id == page.id && self.page?.fingerprint == page.fingerprint && errorMessage == nil {
             InteractionDiagnostics.documentBound(operation: .reader, generation: token, documentGeneration: request)
@@ -74,7 +78,6 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
             if InteractionDiagnostics.isEnabled && !loading { readerGeneration = token }
             return
         }
-        openRequest = token
         do {
             let visit = try await currentVisit()
             guard token == openRequest else {
@@ -93,22 +96,38 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
 
     func back() async -> BrowseContext? {
         guard let visit = previous.last, !loading else { return nil }
+        let token = UUID()
+        openRequest = token
         do {
-            if let current = try await currentVisit() { following.append(current) }
+            let current = try await currentVisit()
+            guard token == openRequest else { return nil }
+            if let current { following.append(current) }
             previous.removeLast()
-            load(visit, generation: UUID())
+            load(visit, generation: token)
             return visit.context
-        } catch { errorMessage = error.localizedDescription; return nil }
+        } catch {
+            guard token == openRequest else { return nil }
+            errorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     func forward() async -> BrowseContext? {
         guard let visit = following.last, !loading else { return nil }
+        let token = UUID()
+        openRequest = token
         do {
-            if let current = try await currentVisit() { previous.append(current) }
+            let current = try await currentVisit()
+            guard token == openRequest else { return nil }
+            if let current { previous.append(current) }
             following.removeLast()
-            load(visit, generation: UUID())
+            load(visit, generation: token)
             return visit.context
-        } catch { errorMessage = error.localizedDescription; return nil }
+        } catch {
+            guard token == openRequest else { return nil }
+            errorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     func retry() {
@@ -117,6 +136,7 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     private func load(_ visit: ReaderVisit, generation: UUID) {
+        openRequest = generation
         InteractionDiagnostics.started(operation: .reader, generation: generation, query: visit.context.query, documentID: visit.page.id)
         task?.cancel()
         activeNavigation = nil
@@ -165,6 +185,9 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
                 throw ManualToolError(message: "WebKit returned an invalid reading position.")
             }
             scroll = value
+#if DEBUG
+            await onReaderPositionRead?()
+#endif
         } else { scroll = pendingScroll }
         return ReaderVisit(page: page, context: context, scroll: scroll, find: findQuery, zoom: webView.pageZoom)
     }
