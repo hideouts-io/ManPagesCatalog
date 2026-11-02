@@ -110,6 +110,7 @@ jobs:
         case: [class-macro, class-protocol-macro, class-protocol]
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      CODEQL_EXTRACTOR_SWIFT_LOG_LEVELS: "*:info,out:binary:no_logs,out:text:info,out:console:warning"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -142,6 +143,76 @@ jobs:
             ${{ runner.temp }}/macro-collision/native-symbolgraph/*
             ${{ runner.temp }}/macro-collision/swift.sarif
             ${{ runner.temp }}/macro-collision/db/log/**
+          if-no-files-found: error
+          retention-days: 7
+
+  macro-stack:
+    name: Identifier macro extractor stack
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      CODEQL_EXTRACTOR_SWIFT_LOG_LEVELS: "*:info,out:binary:no_logs,out:text:info,out:console:warning"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: stack-setup
+        with:
+          languages: swift
+          tools: linked
+      - name: Inspect official extractor and capture the ambiguity stack
+        timeout-minutes: 40
+        env:
+          CODEQL_CLI: ${{ steps.stack-setup.outputs.codeql-path }}
+          PROBE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          export CODEQL_EXTRACTOR_SWIFT_ROOT="$(dirname "$CODEQL_CLI")/swift"
+          extractor="$CODEQL_EXTRACTOR_SWIFT_ROOT/tools/osx64/extractor.real"
+          test -x "$extractor"
+          mkdir "$RUNNER_TEMP/macro-stack-binary"
+          file "$extractor" > "$RUNNER_TEMP/macro-stack-binary/file.txt"
+          shasum -a 256 "$extractor" > "$RUNNER_TEMP/macro-stack-binary/sha256.txt"
+          xcrun otool -L "$extractor" > "$RUNNER_TEMP/macro-stack-binary/libraries.txt"
+          xcrun nm -j "$extractor" | xcrun c++filt | awk '
+            /clang::Sema::DiagnoseAmbiguousLookup/ { print; found = 1 }
+            END { if (!found) exit 1 }
+          ' > "$RUNNER_TEMP/macro-stack-binary/breakpoint-symbols.txt"
+          export CODEQL_EXTRACTOR_SWIFT_RUN_UNDER="$GITHUB_WORKSPACE/.github/codeql/pdfkit/capture-extractor-stack.sh"
+          export CODEQL_EXTRACTOR_SWIFT_RUN_UNDER_FILTER='Probe[.]swift'
+          export PROBE_DEBUG_OUTPUT="$RUNNER_TEMP/macro-stack-captures"
+          mkdir "$PROBE_DEBUG_OUTPUT"
+          bash .github/codeql/pdfkit/isolate-macro-collision.sh "$CODEQL_CLI" \
+            .github/codeql/pdfkit/macro-controls/class-protocol-macro "$RUNNER_TEMP/macro-stack" "$PROBE_HEAD_SHA"
+          shopt -s nullglob
+          statuses=("$PROBE_DEBUG_OUTPUT"/*/status.json)
+          if [[ "${#statuses[@]}" == "0" ]]; then
+            printf 'The extractor debugger hook did not record an invocation.\n' >&2
+            exit 1
+          fi
+          jq -es '
+            all(.[]; .process_state == "exited" and .child_exit_status == 0 and .capture_exit_status == 0)
+            and any(.[]; .capture_verified == true and (.breakpoint_hits | type) == "number" and .breakpoint_hits > 0)
+          ' "${statuses[@]}"
+          awk '/frame #0:.*clang::Sema::DiagnoseAmbiguousLookup/ { found = 1 }
+            END { if (!found) exit 1 }' "$PROBE_DEBUG_OUTPUT"/*/lldb.log
+      - name: Upload fixture-only extractor stack evidence
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: identifier-macro-extractor-stack
+          path: |
+            ${{ runner.temp }}/macro-stack-binary/*
+            ${{ runner.temp }}/macro-stack-captures/*/*
+            ${{ runner.temp }}/macro-stack/src/*
+            ${{ runner.temp }}/macro-stack/commands/*
+            ${{ runner.temp }}/macro-stack/logs/*
+            ${{ runner.temp }}/macro-stack/summary/*
+            ${{ runner.temp }}/macro-stack/swift.sarif
           if-no-files-found: error
           retention-days: 7
 
