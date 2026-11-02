@@ -1,0 +1,4 @@
+module NamespaceProbe {
+    header "Probe.h"
+    export *
+}
