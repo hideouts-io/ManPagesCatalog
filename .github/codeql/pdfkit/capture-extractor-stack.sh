@@ -43,7 +43,9 @@ printf '\n' >> "$invocation/command.sh"
 
 # Keep Xcode's debugger libraries separate; the command file restores this path only for the extractor.
 if env -u DYLD_LIBRARY_PATH xcrun lldb --no-lldbinit --batch --source "$probe_root/capture-extractor-stack.lldb" \
-  -- "$extractor_real" "$@" > "$invocation/lldb.log" 2>&1; then
+  --one-line-before-file 'settings set interpreter.prompt-on-quit false' \
+  --one-line-on-crash 'quit 125' \
+  -- "$extractor_real" "$@" < /dev/null > "$invocation/lldb.log" 2>&1; then
   debugger_status=0
 else
   debugger_status=$?

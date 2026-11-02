@@ -148,8 +148,8 @@ jobs:
 
   macro-stack:
     name: Identifier macro extractor stack
-    runs-on: macos-26
-    timeout-minutes: 45
+    runs-on: macos-26-intel
+    timeout-minutes: 25
     permissions:
       contents: read
     env:
@@ -165,12 +165,13 @@ jobs:
           languages: swift
           tools: linked
       - name: Inspect official extractor and capture the ambiguity stack
-        timeout-minutes: 40
+        timeout-minutes: 20
         env:
           CODEQL_CLI: ${{ steps.stack-setup.outputs.codeql-path }}
           PROBE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+          test "$(uname -m)" = x86_64
           export CODEQL_EXTRACTOR_SWIFT_ROOT="$(dirname "$CODEQL_CLI")/swift"
           extractor="$CODEQL_EXTRACTOR_SWIFT_ROOT/tools/osx64/extractor.real"
           test -x "$extractor"
