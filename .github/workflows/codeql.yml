@@ -19,16 +19,50 @@ concurrency:
 jobs:
   swift:
     name: Analyze Swift
-    runs-on: macos-26
-    timeout-minutes: 60
+    runs-on: macos-26-intel
+    # Includes pinned source builds and controls before the unchanged app analysis.
+    timeout-minutes: 100
     permissions:
       contents: read
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      CODEQL_EXTRACTOR_SWIFT_LOG_LEVELS: "*:info,out:binary:no_logs,out:text:info,out:console:warning"
+      CODEQL_ACTION_EXTRA_OPTIONS: >-
+        {"database":{"init":["--search-path=${{ github.workspace }}/build/compiler-candidate/pack-C"]},"resolve":{"extractor":["--search-path=${{ github.workspace }}/build/compiler-candidate/pack-C"],"languages":["--search-path=${{ github.workspace }}/build/compiler-candidate/pack-C"]}}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Prepare the verified official CodeQL bundle before tracing
+        id: stock
+        timeout-minutes: 10
+        run: |
+          python3 .github/codeql/pdfkit/compiler-candidate/setup-stock-codeql.py \
+            --output "$RUNNER_TEMP/stock-codeql"
+          archive=$(cat "$RUNNER_TEMP/stock-codeql/summary/archive-path.txt")
+          cli=$(cat "$RUNNER_TEMP/stock-codeql/summary/cli-path.txt")
+          test "$archive" = "$RUNNER_TEMP/stock-codeql/codeql-bundle-osx64.tar.zst"
+          test "$cli" = "$RUNNER_TEMP/stock-codeql/bundle/codeql/codeql"
+          printf 'archive=%s\ncli=%s\n' "$archive" "$cli" >> "$GITHUB_OUTPUT"
+      - name: Build the controlled Swift importer correction
+        timeout-minutes: 25
+        run: |
+          python3 .github/codeql/pdfkit/compiler-candidate/build-extractors.py \
+            --output "$GITHUB_WORKSPACE/build/compiler-candidate"
+      - name: Require compiler controls before application tracing
+        timeout-minutes: 40
+        env:
+          CODEQL_CLI: ${{ steps.stock.outputs.cli }}
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 .github/codeql/pdfkit/compiler-validation/validate-extractors.py \
+            --codeql "$CODEQL_CLI" \
+            --control-pack "$GITHUB_WORKSPACE/build/compiler-candidate/pack-B" \
+            --patched-pack "$GITHUB_WORKSPACE/build/compiler-candidate/pack-C" \
+            --output "$RUNNER_TEMP/compiler-validation" \
+            --candidate-revision "$CANDIDATE_REVISION"
+          jq -e '.differential_fixture_validation == true and .case_count == 24 and .stock_bundle_unchanged == true' \
+            "$RUNNER_TEMP/compiler-validation/summary/verdict.json"
       - name: Install and resolve required Metal toolchain
         id: metal
         run: |
@@ -43,9 +77,30 @@ jobs:
           "$search_path/Metal.xctoolchain/usr/bin/metal" -v
           printf 'identifier=%s\nsearch-path=%s\n' "$identifier" "$search_path" >> "$GITHUB_OUTPUT"
       - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: init
         with:
           languages: swift
           build-mode: manual
+          tools: ${{ steps.stock.outputs.archive }}
+      - name: Verify initialized tool identity and extractor selection
+        env:
+          CODEQL_CLI: ${{ steps.init.outputs.codeql-path }}
+          PREINIT_CLI: ${{ steps.stock.outputs.cli }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/initialized-codeql"
+          "$CODEQL_CLI" version --format=json > "$RUNNER_TEMP/initialized-codeql/version.json"
+          jq -e '.version == "2.27.3"' "$RUNNER_TEMP/initialized-codeql/version.json"
+          for suffix in codeql swift/tools/osx64/extractor.real swift/swift.dbscheme; do
+            actual=$(shasum -a 256 "$(dirname "$CODEQL_CLI")/$suffix")
+            expected=$(shasum -a 256 "$(dirname "$PREINIT_CLI")/$suffix")
+            test "${actual%% *}" = "${expected%% *}"
+          done
+          expected_pack="$GITHUB_WORKSPACE/build/compiler-candidate/pack-C"
+          "$CODEQL_CLI" resolve extractor --language=swift --search-path="$expected_pack" \
+            --format=json > "$RUNNER_TEMP/initialized-codeql/extractor.json"
+          selected_pack=$(jq -er 'select(type == "string" and length > 0)' "$RUNNER_TEMP/initialized-codeql/extractor.json")
+          test "$(cd "$selected_pack" && pwd -P)" = "$(cd "$expected_pack" && pwd -P)"
       - name: Build native application
         # Resolve Metal before CodeQL tracing changes toolchain discovery (codeql-action#3978).
         env:
@@ -89,6 +144,33 @@ jobs:
             exit 1
           fi
           printf 'Swift extraction compiler diagnostics: 0\n'
+      - name: Require every application Swift source to be extracted
+        env:
+          SARIF_FILE: ${{ runner.temp }}/codeql-sarif/swift.sarif
+        run: |
+          git ls-files -- 'ManPageCatalog/*.swift' | LC_ALL=C sort > "$RUNNER_TEMP/initialized-codeql/expected-sources.txt"
+          test -s "$RUNNER_TEMP/initialized-codeql/expected-sources.txt"
+          jq -er '[.runs[].invocations[].toolExecutionNotifications[] |
+            select(.descriptor.id == "swift/diagnostics/successfully-extracted-files") |
+            .locations[].physicalLocation.artifactLocation.uri |
+            select(startswith("ManPageCatalog/"))] | unique | .[]' \
+            "$SARIF_FILE" | LC_ALL=C sort > "$RUNNER_TEMP/initialized-codeql/extracted-sources.txt"
+          cmp "$RUNNER_TEMP/initialized-codeql/expected-sources.txt" "$RUNNER_TEMP/initialized-codeql/extracted-sources.txt"
+      - name: Upload public compiler validation evidence
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: codeql-swift-compiler-evidence
+          path: |
+            ${{ runner.temp }}/stock-codeql/summary/**
+            ${{ runner.temp }}/stock-codeql/logs/**
+            ${{ github.workspace }}/build/compiler-candidate/summary/**
+            ${{ github.workspace }}/build/compiler-candidate/logs/**
+            ${{ runner.temp }}/compiler-validation/summary/**
+            ${{ runner.temp }}/compiler-validation/logs/**
+            ${{ runner.temp }}/initialized-codeql/**
+          if-no-files-found: error
+          retention-days: 7
       - name: Upload SARIF artifact
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
