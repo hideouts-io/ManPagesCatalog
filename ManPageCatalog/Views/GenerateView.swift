@@ -2,6 +2,7 @@ import SwiftUI
 
 struct GenerateView: View {
     @EnvironmentObject var store: CatalogStore
+    @EnvironmentObject var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var generator: CatalogGenerator
     @State private var outputPath = ""
@@ -44,10 +45,10 @@ struct GenerateView: View {
                         dismiss()
                     }.disabled(!validPath).accessibilityIdentifier("openCatalog")
                     Button("Refresh Metadata") {
-                        generator.refresh(output: URL(fileURLWithPath: outputPath), store: store)
+                        generator.refresh(output: URL(fileURLWithPath: outputPath), store: store, authority: library.sourceAuthority)
                     }.disabled(!validPath).accessibilityIdentifier("refreshMetadata")
                     Button("Generate PDFs") {
-                        generator.generate(output: URL(fileURLWithPath: outputPath), store: store)
+                        generator.generate(output: URL(fileURLWithPath: outputPath), store: store, authority: library.sourceAuthority)
                     }.disabled(!validPath).accessibilityIdentifier("generatePDFs")
                 }
             }

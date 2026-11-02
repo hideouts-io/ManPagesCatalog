@@ -144,18 +144,24 @@ A failed or cancelled scan preserves usable catalog entries and partial discover
 
 ### Formats, aliases, and versions
 
-Discovery validates roff/man/mdoc and Tcl/Tk `.HS` headers instead of accepting filenames alone. It recognizes numbered and extended sections, locale directories, file symlinks, gzip, Unix compress (`.Z`), bzip2, and whole-file `.so` aliases with compressed targets. Compression signatures also identify renamed containers.
+Discovery validates roff/man/mdoc and Tcl/Tk `.HS` headers instead of accepting filenames alone. It recognizes numbered and extended sections, locale directories, file symlinks, gzip, Unix compress (`.Z`), bzip2, single-stream XZ, whole-file `.so` aliases and eligible unconditional literal `.so` includes with compressed targets. This includes the installed `zshall` aggregate. Recognized container signatures take priority over misleading extensions.
 
 Resolved content is fingerprinted with SHA-256 and grouped by section and language. Identical content retains its encountered file locations and searchable aliases; different content remains a separate result. Directory identity prevents repeated traversal and symlink loops. An encountered alternate directory path has a typed coverage reference to the first opened path and its actual coverage root, displayed under **Measured coverage** and retained in exported JSON. That canonical record's pending work and gaps still apply to the alias. Descendant manual paths are not invented or counted twice. Older records without root ownership remain explicit; a fresh scan establishes that provenance and reconciles retargeted aliases.
 
+Each newly discovered file location also retains its scan restrictions and ordered source dependencies. Reading, history, indexing and PDF export reacquire the chosen location and verify both its content and dependency identity. Included-file changes require a fresh scan. Saved inventories and checkpoints cannot grant network access: current folder selections authorize new reads, and removing a selection revokes in-flight acquisition. Unchanged selections keep their original resolved targets when another folder is added or removed. Retained search text and history are historical snapshots, not renewed permission to read a source. Older inventories without this metadata carry no historical scan boundary or saved network grant; current selections still govern network reads. Malformed present provenance fails explicitly.
+
+Embedded expansion accepts a conservative static man/mdoc subset so that a literal include cannot be confused with macro definitions, changed controls, strings or conditionals. Every target is checked for source boundaries, current network consent and materialization. Cycles, depth beyond 32 files, more than 1,024 source occurrences and more than 64 MiB of decoded or expanded input fail explicitly. Repeated targets count as separate occurrences. `mandoc` then receives immutable expanded stdin in a new empty private directory; unexpected generated/insecure include diagnostics are failures. This relies on the system formatter's documented relative-path restrictions and is not an OS sandbox against another process running as the same user.
+
 Current input boundaries include:
 
-- preformatted cat pages, embedded roff includes beyond whole-file aliases, and additional compression such as XZ, LZMA, Zstandard, LZ4, and lzip;
+- preformatted cat pages, `.mso`, conditional or macro-generated includes, ambiguous embedded-include markup, and additional compression such as LZMA-alone, Zstandard, LZ4, and lzip;
 - manuals inside archives and files on unmounted volumes;
 - nonstandard filenames whose supported manual header is absent from the first 64 KiB;
 - source inputs and formatter output exceeding 64 MiB.
 
 Recognized unsupported candidates receive a notice. A validated manual with unsupported embedded includes can remain searchable by name with an explicit issue, but its unverified included text is not indexed. Some formats can therefore remain discoverable without being readable or exportable. The prioritized work for these gaps lives in [TODO.md](TODO.md).
+
+XZ uses Apple's Compression framework, with no `xz` executable or package-manager runtime required. Decoding requires one complete XZ stream and valid integrity checks; concatenated streams, padding and trailing bytes fail explicitly. Compressed input and decoded output each have a 64 MiB limit. Cancellation and a 30-second deadline are checked between processing calls. The public API provides no dictionary-memory ceiling or in-call cancellation, so these limits do not establish a total decoder-memory budget or hard cancellation latency. [Apple's documented format contract](https://developer.apple.com/documentation/compression/compression_lzma) does not include LZMA-alone or raw LZMA.
 
 ## Search and read
 
