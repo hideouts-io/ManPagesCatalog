@@ -216,6 +216,50 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  quartz-comparison:
+    name: Quartz reexport PDF behavior and extraction
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      CODEQL_EXTRACTOR_SWIFT_LOG_LEVELS: "*:info,out:binary:no_logs,out:text:info,out:console:warning"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: quartz-setup
+        with:
+          languages: swift
+          tools: linked
+      - name: Compare actual PDF operations through the Quartz reexport
+        timeout-minutes: 40
+        env:
+          CODEQL_CLI: ${{ steps.quartz-setup.outputs.codeql-path }}
+          PROBE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          bash .github/codeql/pdfkit/reproduce.sh "$CODEQL_CLI" \
+            .github/codeql/pdfkit/quartz/FileUtilities.swift "$RUNNER_TEMP/quartz-comparison"
+          jq -n --arg candidate "$PROBE_HEAD_SHA" --arg checkout "$(git rev-parse HEAD)" \
+            '{candidate_revision:$candidate, checkout_revision:$checkout, application_acceptance:false}' \
+            > "$RUNNER_TEMP/quartz-comparison/summary/revisions.json"
+          shasum -a 256 .github/codeql/pdfkit/quartz/FileUtilities.swift \
+            > "$RUNNER_TEMP/quartz-comparison/summary/source-sha256.txt"
+      - name: Upload fixture-only Quartz comparison
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: quartz-pdfkit-comparison
+          path: |
+            ${{ runner.temp }}/quartz-comparison/summary/*
+            ${{ runner.temp }}/quartz-comparison/toolchain.txt
+            ${{ runner.temp }}/quartz-comparison/codeql-version.json
+            ${{ runner.temp }}/quartz-comparison/case/swift.sarif
+          if-no-files-found: error
+          retention-days: 7
+
   matching-compiler:
     if: github.event_name == 'workflow_dispatch'
     name: Swift 6.3.1 extraction with current analysis
