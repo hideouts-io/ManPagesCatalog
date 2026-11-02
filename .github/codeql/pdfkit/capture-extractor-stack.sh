@@ -41,7 +41,8 @@ jq -n --argjson wrapper_pid "$$" --arg extractor "$extractor_real" \
 printf '%q ' "$extractor_real" "$@" > "$invocation/command.sh"
 printf '\n' >> "$invocation/command.sh"
 
-if xcrun lldb --no-lldbinit --batch --source "$probe_root/capture-extractor-stack.lldb" \
+# Keep Xcode's debugger libraries separate; the command file restores this path only for the extractor.
+if env -u DYLD_LIBRARY_PATH xcrun lldb --no-lldbinit --batch --source "$probe_root/capture-extractor-stack.lldb" \
   -- "$extractor_real" "$@" > "$invocation/lldb.log" 2>&1; then
   debugger_status=0
 else
