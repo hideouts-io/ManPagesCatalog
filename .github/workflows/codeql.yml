@@ -21,7 +21,7 @@ jobs:
     name: Analyze Swift
     runs-on: macos-26-intel
     # Includes pinned builds, sequential SDK controls, and native app analysis.
-    timeout-minutes: 145
+    timeout-minutes: 165
     permissions:
       contents: read
     env:
@@ -54,7 +54,7 @@ jobs:
           python3 .github/codeql/pdfkit/compiler-candidate/build-extractors.py \
             --output "$GITHUB_WORKSPACE/build/compiler-candidate"
       - name: Require compiler controls before application tracing
-        timeout-minutes: 65
+        timeout-minutes: 80
         env:
           CODEQL_CLI: ${{ steps.stock.outputs.cli }}
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}

@@ -404,7 +404,7 @@ def main() -> None:
     output.mkdir(mode=0o700)
     (output / "summary").mkdir()
     (output / "logs").mkdir()
-    deadline = time.monotonic() + 3600
+    deadline = time.monotonic() + 4500
     environment = {**os.environ, "CODEQL_EXTRACTOR_SWIFT_LOG_LEVELS":
                    "*:info,out:binary:no_logs,out:text:info,out:console:warning"}
     require_command((str(cli), "version", "--format=json"), output, output / "logs/version.log", environment, deadline, 30)

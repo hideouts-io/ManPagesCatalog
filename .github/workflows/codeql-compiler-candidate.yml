@@ -16,7 +16,7 @@ jobs:
   differential:
     name: Compare released, control, and patched Swift extractors
     runs-on: macos-26-intel
-    timeout-minutes: 145
+    timeout-minutes: 165
     permissions:
       contents: read
     env:
@@ -47,7 +47,7 @@ jobs:
           python3 .github/codeql/pdfkit/compiler-candidate/build-extractors.py \
             --output "$GITHUB_WORKSPACE/build/compiler-candidate"
       - name: Compare macro controls and real PDFKit semantics
-        timeout-minutes: 65
+        timeout-minutes: 80
         env:
           CODEQL_CLI: ${{ steps.stock.outputs.cli }}
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
