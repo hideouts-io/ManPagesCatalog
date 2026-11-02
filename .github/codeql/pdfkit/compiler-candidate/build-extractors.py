@@ -221,7 +221,7 @@ def run_command(command: list[str], cwd: Path, output: Path, name: str,
         try:
             while process.poll() is None:
                 if time.monotonic() >= deadline:
-                    reason = "20 minute experiment deadline"
+                    reason = "30 minute experiment deadline"
                     break
                 if shutil.disk_usage(output).free < 3_000_000_000:
                     reason = "free disk below 3 GB"
@@ -386,7 +386,7 @@ def build(output: Path, inputs: Path, host: dict[str, str]) -> None:
     for name in ("downloads", "logs", "summary", "tmp", "events"):
         (output / name).mkdir()
     environment = command_environment(host["developer_dir"], output / "tmp")
-    deadline = time.monotonic() + 1200
+    deadline = time.monotonic() + 1800
     write_json(output / "provenance.json", {"host": host, "pins": pins, "sources": sources,
                "input_sha256": sha256_file(inputs / "inputs.json"), "extraction_executed": False,
                "experimental_only": True, "compiler_regression_tests_run": False})

@@ -16,7 +16,7 @@ jobs:
   differential:
     name: Compare released, control, and patched Swift extractors
     runs-on: macos-26-intel
-    timeout-minutes: 130
+    timeout-minutes: 145
     permissions:
       contents: read
     env:
@@ -42,7 +42,7 @@ jobs:
           test "$cli" = "$RUNNER_TEMP/stock-codeql/bundle/codeql/codeql"
           printf 'archive=%s\ncli=%s\n' "$archive" "$cli" >> "$GITHUB_OUTPUT"
       - name: Build isolated unpatched control and compiler correction
-        timeout-minutes: 25
+        timeout-minutes: 35
         run: |
           python3 .github/codeql/pdfkit/compiler-candidate/build-extractors.py \
             --output "$GITHUB_WORKSPACE/build/compiler-candidate"
