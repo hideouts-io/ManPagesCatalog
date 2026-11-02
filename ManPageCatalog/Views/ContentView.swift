@@ -99,7 +99,7 @@ struct ContentView: View {
                         ManualDetailView(reader: reader).frame(minHeight: 220, maxHeight: .infinity)
                     }
                 }
-            }
+            }.navigationSplitViewColumnWidth(min: 560, ideal: 700)
         }
         .navigationTitle("Man Page Catalog")
         .toolbar {
