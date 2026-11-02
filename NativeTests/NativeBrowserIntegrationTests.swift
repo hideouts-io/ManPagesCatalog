@@ -136,6 +136,141 @@ final class NativeBrowserIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testPendingReaderOpenCannotReplaceReusedCurrentDocument() async throws {
+        let launchctl = try await readerPage(name: "launchctl", section: "1")
+        let ping = try await readerPage(name: "ping", section: "8")
+        let context = BrowseContext(query: "launchctl", section: "1", root: nil, fullText: false)
+        let reader = ManualReader()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 650), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = reader.webView
+        defer {
+            reader.onReaderPositionRead = nil
+            reader.webView.stopLoading()
+            window.close()
+        }
+        await reader.open(page: launchctl, context: context)
+        try await waitForReader(reader, expectedPage: launchctl)
+        reader.findQuery = "bootstrap"
+        reader.webView.pageZoom = 1.2
+        _ = try await reader.webView.evaluateJavaScript("window.scrollTo(0,600); window.navigationIdentity='retained'; const range=document.createRange(); range.selectNodeContents(document.getElementById('NAME')); window.getSelection().removeAllRanges(); window.getSelection().addRange(range);")
+        let selection = try await reader.webView.evaluateJavaScript("window.getSelection().toString()") as? String
+        let scroll = try await reader.webView.evaluateJavaScript("window.scrollY") as? Double
+        var reusedAtPositionRead = false
+        reader.onReaderPositionRead = {
+            reader.onReaderPositionRead = nil
+            reusedAtPositionRead = true
+            await reader.open(page: launchctl, context: context)
+        }
+        await reader.open(page: ping, context: BrowseContext(query: "ping", section: "8", root: nil, fullText: false))
+        XCTAssertTrue(reusedAtPositionRead, "The newer activation must occur after a real WebKit position read")
+        guard reader.page?.id == launchctl.id, !reader.loading else {
+            XCTFail("The older pending activation replaced the more recently reused manual")
+            return
+        }
+        XCTAssertFalse(reader.canBack, "A superseded activation must not add a history entry")
+        XCTAssertFalse(reader.canForward)
+        XCTAssertEqual(reader.findQuery, "bootstrap")
+        XCTAssertEqual(reader.webView.pageZoom, 1.2)
+        let identity = try await reader.webView.evaluateJavaScript("window.navigationIdentity") as? String
+        let retainedSelection = try await reader.webView.evaluateJavaScript("window.getSelection().toString()") as? String
+        let retainedScroll = try await reader.webView.evaluateJavaScript("window.scrollY") as? Double
+        XCTAssertEqual(identity, "retained")
+        XCTAssertEqual(retainedSelection, selection)
+        XCTAssertEqual(retainedScroll, scroll)
+        reader.onReaderPositionRead = {
+            reader.onReaderPositionRead = nil
+            reader.retry()
+        }
+        await reader.open(page: ping, context: BrowseContext(query: "ping", section: "8", root: nil, fullText: false))
+        guard reader.page?.id == launchctl.id else {
+            XCTFail("A newer Retry must supersede an older pending activation")
+            return
+        }
+        try await waitForReader(reader, expectedPage: launchctl)
+        XCTAssertFalse(reader.canBack)
+        XCTAssertFalse(reader.canForward)
+        XCTAssertEqual(reader.findQuery, "bootstrap")
+        XCTAssertEqual(reader.webView.pageZoom, 1.2)
+    }
+
+    @MainActor
+    func testOverlappingReaderHistoryRetainsLatestNavigation() async throws {
+        let launchctl = try await readerPage(name: "launchctl", section: "1")
+        let ping = try await readerPage(name: "ping", section: "8")
+        let ifconfig = try await readerPage(name: "ifconfig", section: "8")
+        let first = BrowseContext(query: "launchctl", section: "1", root: nil, fullText: false)
+        let second = BrowseContext(query: "ping", section: "8", root: nil, fullText: true)
+        let third = BrowseContext(query: "ifconfig", section: nil, root: nil, fullText: false)
+        let reader = ManualReader()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 650), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = reader.webView
+        defer {
+            reader.onReaderPositionRead = nil
+            reader.webView.stopLoading()
+            window.close()
+        }
+        await reader.open(page: launchctl, context: first)
+        try await waitForReader(reader, expectedPage: launchctl)
+        await reader.open(page: ping, context: second)
+        try await waitForReader(reader, expectedPage: ping)
+        reader.findQuery = "packet"
+        reader.webView.pageZoom = 1.2
+        _ = try await reader.webView.evaluateJavaScript("window.scrollTo(0,500)")
+        let pingScrollValue = try await reader.webView.evaluateJavaScript("window.scrollY") as? Double
+        let pingScroll = try XCTUnwrap(pingScrollValue)
+        await reader.open(page: ifconfig, context: third)
+        try await waitForReader(reader, expectedPage: ifconfig)
+        var newerBack: BrowseContext?
+        reader.onReaderPositionRead = {
+            reader.onReaderPositionRead = nil
+            newerBack = await reader.back()
+        }
+        let olderBack = await reader.back()
+        guard olderBack == nil, newerBack == second else {
+            XCTFail("Overlapping Back actions must consume only the latest navigation's history entry")
+            return
+        }
+        try await waitForReader(reader, expectedPage: ping)
+        XCTAssertTrue(reader.canBack, "The first manual must remain reachable after one accepted Back")
+        XCTAssertTrue(reader.canForward)
+        XCTAssertEqual(reader.findQuery, "packet")
+        XCTAssertEqual(reader.webView.pageZoom, 1.2)
+        let restoredScrollValue = try await reader.webView.evaluateJavaScript("window.scrollY") as? Double
+        let restoredScroll = try XCTUnwrap(restoredScrollValue)
+        XCTAssertEqual(restoredScroll, pingScroll, accuracy: 1)
+        let restoredFirst = await reader.back()
+        XCTAssertEqual(restoredFirst, first)
+        try await waitForReader(reader, expectedPage: launchctl)
+        XCTAssertFalse(reader.canBack)
+        var newerForward: BrowseContext?
+        reader.onReaderPositionRead = {
+            reader.onReaderPositionRead = nil
+            newerForward = await reader.forward()
+        }
+        let olderForward = await reader.forward()
+        guard olderForward == nil, newerForward == second else {
+            XCTFail("Overlapping Forward actions must consume only the latest navigation's history entry")
+            return
+        }
+        try await waitForReader(reader, expectedPage: ping)
+        XCTAssertTrue(reader.canForward, "The third manual must remain reachable after one accepted Forward")
+        let restoredThird = await reader.forward()
+        XCTAssertEqual(restoredThird, third)
+        try await waitForReader(reader, expectedPage: ifconfig)
+        XCTAssertFalse(reader.canForward)
+    }
+
+    @MainActor
+    private func readerPage(name: String, section: String) async throws -> ManualPage {
+        let root = URL(fileURLWithPath: "/usr/share/man")
+        let source = root.appendingPathComponent("man\(section)/\(name).\(section)")
+        let page = try await discoveredManual(file: source, root: root, state: materializedFileState(source), allowedNetworkRoots: [], exclusions: [])
+        return try XCTUnwrap(page, "The installed manual must have a verified content identity")
+    }
+
+    @MainActor
     func testLibraryRefreshCancellationAndSearchWithRealSources() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("LibraryIntegration-\(UUID().uuidString)")
         let root = directory.appendingPathComponent("manuals")
