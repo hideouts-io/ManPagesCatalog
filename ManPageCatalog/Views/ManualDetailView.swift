@@ -3,6 +3,7 @@ import SwiftUI
 struct ManualDetailView: View {
     @EnvironmentObject var terminal: TerminalSession
     @State private var pendingDraft: CommandDraft?
+    @State private var pendingCommand: ManualPage?
     @ObservedObject var reader: ManualReader
     @FocusState private var findFocused: Bool
     @State private var showOutline = false
@@ -15,11 +16,16 @@ struct ManualDetailView: View {
                 if reader.showFind {
                     HStack {
                         Image(systemName: "doc.text.magnifyingglass")
-                        TextField("Find in \(page.title)…", text: $reader.findQuery)
+                        TextField("Find in \(page.title)…", text: Binding(get: { reader.findQuery }, set: { reader.setFindQuery($0) }))
                             .textFieldStyle(.roundedBorder).focused($findFocused)
                             .accessibilityIdentifier("readerFind")
                             .onSubmit { reader.findNext() }
                         Text(reader.findStatus).font(.caption).accessibilityIdentifier("readerFindStatus")
+                            .background {
+                                if InteractionDiagnostics.isEnabled {
+                                    InteractionViewProbe(operation: reader.findOperation, generation: reader.findGeneration).frame(width: 0, height: 0)
+                                }
+                            }
                         Button { reader.findPrevious() } label: { Image(systemName: "chevron.up") }
                             .accessibilityLabel("Previous match").accessibilityIdentifier("previousMatch")
                         Button { reader.findNext() } label: { Image(systemName: "chevron.down") }
@@ -58,6 +64,11 @@ struct ManualDetailView: View {
                 }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .background {
+            if InteractionDiagnostics.isEnabled {
+                InteractionViewProbe(operation: .reader, generation: reader.readerGeneration).frame(width: 0, height: 0)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .findInPage)) { _ in
             reader.showFind = true
             findFocused = true
@@ -67,23 +78,38 @@ struct ManualDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .previousMatch)) { _ in reader.findPrevious() }
         .onChange(of: reader.findQuery) { _ in if !reader.loading { reader.findNext() } }
         .onExitCommand { reader.showFind = false }
-        .alert("Replace the existing command draft?", isPresented: Binding(get: { pendingDraft != nil }, set: { if !$0 { pendingDraft = nil } })) {
+        .alert("Replace the existing command draft?", isPresented: Binding(get: { pendingDraft != nil || pendingCommand != nil }, set: { if !$0 { pendingDraft = nil; pendingCommand = nil } })) {
             Button("Replace Draft") {
                 if let draft = pendingDraft { terminal.prepare(text: draft.text, source: draft.source) }
+                else if let page = pendingCommand { terminal.buildCommand(page: page) }
                 pendingDraft = nil
-            }.accessibilityIdentifier("replaceCommandDraft")
-            Button("Cancel", role: .cancel) { pendingDraft = nil }.accessibilityIdentifier("cancelReplaceDraft")
-        } message: { Text("Your edited draft will be replaced. Preparing a draft never starts a shell or runs a command.") }
+                pendingCommand = nil
+            }.accessibilityIdentifier(pendingCommand != nil ? "replaceWithGuidedCommand" : "replaceCommandDraft")
+            Button("Cancel", role: .cancel) { pendingDraft = nil; pendingCommand = nil }
+                .accessibilityIdentifier(pendingCommand != nil ? "cancelGuidedCommand" : "cancelReplaceDraft")
+        } message: { Text("Your current draft will be replaced. Preparing or building a command never starts a shell or runs it.") }
     }
 
     private func header(_ page: ManualPage) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let target = resolveCommandExecutable(name: page.name, section: page.section, environment: ProcessInfo.processInfo.environment)
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text(page.title).font(.system(.title2, design: .monospaced)).fontWeight(.semibold)
-                    .accessibilityIdentifier("readerTitle")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(page.title).font(.system(.title2, design: .monospaced)).fontWeight(.semibold)
+                        .accessibilityIdentifier("readerTitle")
+                    if let path = target.path {
+                        VStack(alignment: .leading) { Text(path).font(.system(.caption, design: .monospaced)).lineLimit(1).truncationMode(.middle).textSelection(.enabled) }
+                            .accessibilityElement(children: .ignore).accessibilityAddTraits(.isStaticText).accessibilityLabel("Executable path").accessibilityValue(path)
+                            .accessibilityIdentifier("readerExecutablePath").help(target.explanation)
+                    } else if case .shellBuiltin = target {
+                        Text("zsh built-in • no executable path").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 Spacer()
+                Button { build(page) } label: { Label("Build Command", systemImage: "terminal") }
+                    .buttonStyle(.borderedProminent).accessibilityIdentifier("buildCommand")
                 Menu {
-                    Button("Prepare Command Name") { prepare(text: quotedShellWord(page.name), page: page) }
+                    Button("Prepare Command Name") { build(page) }
                         .accessibilityIdentifier("prepareCommandName")
                     Button("Prepare Selected Example") {
                         Task {
@@ -134,7 +160,7 @@ struct ManualDetailView: View {
                 } label: { Label("Copy", systemImage: "doc.on.doc") }
                 .accessibilityIdentifier("copyMenu")
                 Button("Copy & Open Terminal") { reader.copyCommandAndOpenTerminal() }
-                    .help("Copies a quoted command name and opens Terminal. Paste it yourself; nothing is executed.")
+                    .help("Copies the verified absolute executable path, or an identified shell built-in, and opens Terminal for you to paste.")
                     .disabled(!["1", "8"].contains(String(page.section.prefix(1))))
                     .accessibilityIdentifier("copyOpenTerminal")
             }.controlSize(.small)
@@ -148,8 +174,14 @@ struct ManualDetailView: View {
         else { pendingDraft = CommandDraft(text: text, source: source) }
     }
 
+    private func build(_ page: ManualPage) {
+        if terminal.draftText.isEmpty { terminal.buildCommand(page: page) }
+        else { pendingCommand = page }
+    }
+
     private func sourceDetails(_ page: ManualPage) -> some View {
-        let executable = executablePath(name: page.name, section: page.section, environment: ProcessInfo.processInfo.environment)
+        let target = resolveCommandExecutable(name: page.name, section: page.section, environment: ProcessInfo.processInfo.environment)
+        let executable = target.path ?? ""
         return VStack(alignment: .leading, spacing: 12) {
             Text("Original documentation").font(.headline)
             Text(page.source.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
@@ -170,7 +202,7 @@ struct ManualDetailView: View {
             Button("Reveal Source in Finder") { NSWorkspace.shared.activateFileViewerSelecting([page.source]) }
                 .accessibilityIdentifier("revealManualSource")
             if executable.isEmpty {
-                Text("No executable verified on this app’s PATH. A manual can document an API or a command that is not installed.").font(.caption).foregroundStyle(.secondary)
+                Text(target.explanation).font(.caption).foregroundStyle(.secondary)
             } else {
                 Divider()
                 Text("Executable found on PATH").font(.headline)

@@ -7,8 +7,9 @@ final class NativeBrowserIntegrationTests: XCTestCase {
     func testDiscoveryAliasesCompressionAndFTSSearch() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NativeManuals-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer {
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = await LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot clean test collection: \(error)") }
         }
         let first = directory.appendingPathComponent("first")
@@ -51,6 +52,19 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         let reopened = try ManualSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
         let cached = try await reopened.metadata()
         XCTAssertEqual(cached.first?.description, description)
+        let legacy = directory.appendingPathComponent("retained-v3.sqlite")
+        try FileManager.default.copyItem(at: directory.appendingPathComponent("index.sqlite"), to: legacy)
+        _ = try await runManualTool(executable: URL(fileURLWithPath: "/usr/bin/sqlite3"),
+                                    arguments: [legacy.path, "DROP TABLE manuals_rowids_v1;"], directory: directory, input: nil)
+        let migrated = try ManualSearchIndex(url: legacy)
+        let migratedMetadata = try await migrated.metadata()
+        XCTAssertEqual(migratedMetadata.count, 1)
+        XCTAssertEqual(migratedMetadata.first?.id, page.id)
+        try await migrated.store(page: page, text: text, description: description, diagnostic: "")
+        let replacedMetadata = try await migrated.metadata()
+        let retainedMatches = try await migrated.matchingIDs(query: "bootstrap")
+        XCTAssertEqual(replacedMetadata.count, 1)
+        XCTAssertEqual(retainedMatches, [page.id])
         try ".so man1/alias.1\n".write(to: alias, atomically: true, encoding: .utf8)
         do { _ = try await manualDescription(source: alias); XCTFail("Alias cycle must fail explicitly") }
         catch { XCTAssertTrue(error.localizedDescription.contains("cycle")) }
@@ -110,6 +124,14 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         XCTAssertEqual(before, after, accuracy: 1)
         XCTAssertEqual(reader.findQuery, "bootstrap")
         XCTAssertTrue(reader.canForward)
+        reader.findNext()
+        await reader.open(page: ping, context: BrowseContext(query: "ping", section: "8", root: nil, fullText: false))
+        try await waitForReader(reader, expectedPage: ping)
+        XCTAssertEqual(reader.page?.id, ping.id)
+        XCTAssertEqual(reader.findQuery, "")
+        for _ in 0..<200 where reader.pendingFindCallbacks > 0 { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(reader.pendingFindCallbacks, 0, "WebKit Find callbacks did not drain within four seconds")
+        XCTAssertEqual(reader.findStatus, "", "A Find completion from launchctl must not update the new document's empty Find state")
         window.close()
     }
 
@@ -123,12 +145,14 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"), to: source)
         let suite = "LibraryTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer {
-            defaults.removePersistentDomain(forName: suite)
-            do { try FileManager.default.removeItem(at: directory) }
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
+            do { try await fixture.remove() }
             catch { XCTFail("Cannot clean library test: \(error)") }
         }
         let library = LibraryStore(directory: directory.appendingPathComponent("index"), defaults: defaults)
+        fixture.track(library)
         library.addRoot(root)
         library.stop()
         library.scan()

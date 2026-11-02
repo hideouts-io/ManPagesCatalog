@@ -1,9 +1,13 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SourcesView: View {
     @EnvironmentObject var library: LibraryStore
     @Environment(\.openWindow) private var openWindow
     @State private var reportError: String?
+    @State private var reportMessage: String?
+    @State private var exportingCoverage = false
+    @State private var exportAnchor = NSView(frame: .zero)
     @AppStorage("manualAppearance") private var appearance = "system"
 
     var body: some View {
@@ -50,18 +54,30 @@ struct SourcesView: View {
                                 .accessibilityIdentifier("discoveryCurrentPath").accessibilityLabel("Current scanning location").accessibilityValue(progress.path)
                         }
                     }
+                    if let report = library.performanceReport {
+                        Text("Discovery: \(report.discovery.cumulative.filesPerSecond.formatted(.number.precision(.fractionLength(0)))) files/sec • \(report.discovery.cumulative.directoriesPerSecond.formatted(.number.precision(.fractionLength(0)))) folders/sec • \(report.discovery.pendingQueue) unfinished folders / entries • peak \(report.discovery.peakPendingQueue)")
+                            .font(.caption).monospacedDigit().accessibilityIdentifier("scanPerformanceSummary")
+                        Text("Local diagnostics only. Export Coverage saves a separate .performance.json report alongside the coverage file.")
+                            .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("localDiagnosticsExplanation")
+                    }
                     if library.resumableScan, let date = library.checkpointDate {
                         HStack {
-                            Text("\(library.pendingLocations) queued locations • checkpoint saved")
+                            Text("\(library.pendingLocations) unfinished folders / entries • checkpoint saved")
                             Text(date, style: .time)
                         }.font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("checkpointStatus")
-                        Text("Resume continues the saved traversal. A new scan replaces that checkpoint and rechecks previously visited folders. Queued folder contents are not counted yet.")
+                        Text("Resume verifies unfinished folders before continuing. A changed folder requires a fresh scan. A new scan replaces the checkpoint and rechecks visited folders. Remaining folder contents are not counted yet.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
                     .accessibilityElement(children: .contain).accessibilityIdentifier("scanProgressPanel")
             }
-            if let error = library.errorMessage ?? reportError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            if let error = library.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            if let reportError {
+                Text(reportError).foregroundStyle(.red).textSelection(.enabled).accessibilityIdentifier("coverageExportError")
+            }
+            if let reportMessage {
+                Text(reportMessage).font(.caption).textSelection(.enabled).accessibilityIdentifier("coverageExportStatus")
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     Section("Selected folders / volumes") {
@@ -70,7 +86,7 @@ struct SourcesView: View {
                                 Text(path).textSelection(.enabled)
                                 Spacer()
                                 Button("Remove") { library.removeRoot(path) }.disabled(library.isIndexing).accessibilityIdentifier("removeSource-\(path)")
-                            }
+                            }.id("selected-root-\(path)")
                         }
                         HStack {
                             Button("Add Folder or Volume…") { addFolder() }.disabled(library.isIndexing).accessibilityIdentifier("addManualSource")
@@ -91,13 +107,14 @@ struct SourcesView: View {
                                     if !issues.isEmpty {
                                         DisclosureGroup("\(kind.rawValue.capitalized): \(issues.count)") {
                                             ForEach(Array(issues.prefix(100).enumerated()), id: \.offset) { _, issue in
-                                                Text("\(issue.path)\n\(issue.reason)").font(.caption).textSelection(.enabled)
+                                                CoverageIssueView(issue: issue)
                                             }
                                             if issues.count > 100 { Text("First 100 shown. Export Coverage includes every recorded location.").font(.caption) }
                                         }.accessibilityIdentifier("coverage-\(kind.rawValue)-\(source.root.path)")
                                     }
                                 }
-                            }.padding(.vertical, 5)
+                            }.padding(.vertical, 5).id("measured-root-\(source.root.path)")
+                                .accessibilityElement(children: .contain).accessibilityIdentifier("measuredCoverage-\(source.root.path)")
                         }
                     }
                     if !library.problemPages.isEmpty {
@@ -116,11 +133,13 @@ struct SourcesView: View {
                     Text("Dark").tag("dark").accessibilityIdentifier("appearanceDark")
                 }.pickerStyle(.segmented).frame(width: 300).accessibilityIdentifier("appAppearance")
                 Spacer()
-                Button("Export Coverage…") { exportCoverage() }.accessibilityIdentifier("exportCoverage")
+                Button(exportingCoverage ? "Exporting…" : "Export Coverage…") { exportCoverage() }
+                    .disabled(exportingCoverage).accessibilityIdentifier("exportCoverage")
             }
             Text("Original files and PDF catalogs are unchanged. Results from earlier scans stay available when a location is inaccessible or a scan is cancelled. Deep scanning can take time; no complete-machine guarantee is made.")
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(20).frame(minWidth: 780, minHeight: 700)
+            .background(SourceWindowAnchor(view: exportAnchor).frame(width: 0, height: 0))
     }
 
     private func scanChoice(title: String, explanation: String, identifier: String, action: @escaping () -> Void) -> some View {
@@ -141,14 +160,61 @@ struct SourcesView: View {
     }
 
     private func exportCoverage() {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "ManPages-scan-coverage.json"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(library.coverage).write(to: url, options: .atomic)
-            reportError = nil
-        } catch { reportError = "Cannot write coverage report to \(url.path): \(error.localizedDescription)" }
+        guard !exportingCoverage else { return }
+        reportError = nil
+        reportMessage = nil
+        guard let window = exportAnchor.window else {
+            reportError = "Cannot open coverage export: Sources & Discovery is not attached to a window. Reopen Scan & Sources and try again."
+            return
+        }
+        exportingCoverage = true
+        Task {
+            defer { exportingCoverage = false }
+            var destination: URL?
+            do {
+                destination = try await chooseExportDestination(window: window, filename: "ManPages-scan-coverage.json",
+                    contentType: .json, title: "Export Scan Coverage", identifier: "coverageExportPanel")
+                guard let destination else { return }
+                try library.exportCoverage(to: destination)
+                reportMessage = "Exported \(destination.lastPathComponent) and its .performance.json diagnostics report"
+            } catch {
+                if let destination {
+                    reportError = "Coverage export did not complete for \(destination.path): \(error.localizedDescription)"
+                } else { reportError = "Cannot open coverage export: \(error.localizedDescription)" }
+            }
+        }
     }
+}
+
+struct CoverageIssueView: View {
+    let issue: DiscoveryIssue
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(issue.path).font(.system(.caption, design: .monospaced))
+            Text(issue.reason).font(.caption)
+            if let reference = issue.directoryReference {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Measured through: \(reference.directory.path)")
+                    if let root = reference.root {
+                        Text("Coverage root: \(root.path)")
+                    } else {
+                        Text("This older checkpoint did not record the owning coverage root. Start a fresh scan to establish it.")
+                    }
+                }.font(.caption).foregroundStyle(.secondary)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("coverageDirectoryReference-\(issue.path)")
+            }
+        }.textSelection(.enabled)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("coverageIssue-\(issue.path)")
+    }
+}
+
+private struct SourceWindowAnchor: NSViewRepresentable {
+    let view: NSView
+
+    func makeNSView(context: Context) -> NSView { view }
+
+    func updateNSView(_ nsView: NSView, context: Context) { }
 }
