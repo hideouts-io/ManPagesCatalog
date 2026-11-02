@@ -175,6 +175,41 @@ def validate_alias_diagnostic(notification: Mapping[str, object], source: Path) 
         raise RuntimeError("Negative alias control has an unexpected source location")
 
 
+def retain_swift_logs(database: Path, logs: Path) -> None:
+    """Retain bounded native fixture logs only after checking every byte for environment dumps."""
+    source = database / "log/swift/extractor"
+    receipt = logs / "swift-extractor-logs.json"
+    if not source.exists():
+        write_json(receipt, {"files": [], "source_directory_created": False})
+        return
+    if source.is_symlink() or database.resolve() not in source.resolve().parents:
+        raise RuntimeError("Swift fixture log directory is outside its owned database")
+    files = sorted(source.glob("*.log"))
+    if len(files) > 16:
+        raise RuntimeError("Swift fixture logs exceed the 16-file retention bound")
+    retained: list[tuple[str, bytes]] = []
+    total = 0
+    for path in files:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
+            raise RuntimeError("Swift fixture log is not a regular file within the 1 MiB bound")
+        with path.open("rb") as native_log:
+            payload = native_log.read(1024 * 1024 + 1)
+        total += len(payload)
+        if len(payload) > 1024 * 1024 or total > 8 * 1024 * 1024:
+            raise RuntimeError("Swift fixture logs exceed their byte retention bound")
+        text = payload.decode("utf-8")
+        if "codeql environment:" in text.lower() or "\0" in text or re.search(
+                r"^\S+\s+\S+\s+(?:DEBG|TRAC|DEBUG|TRACE)\s+", text, re.MULTILINE):
+            raise RuntimeError("Swift fixture log contains an environment dump or non-INFO diagnostic logging")
+        retained.append((path.name, payload))
+    destination = logs / "swift-extractor"
+    destination.mkdir()
+    for name, payload in retained:
+        (destination / name).write_bytes(payload)
+    write_json(receipt, {"files": [name for name, _ in retained], "bytes": total,
+               "source_directory_created": True})
+
+
 def verify_resolution(cli: Path, lane: Lane, output: Path, environment: Mapping[str, str],
                       deadline: float) -> None:
     log = output / "logs" / f"resolve-{lane.name}.log"
@@ -199,6 +234,7 @@ def validate_case(cli: Path, lane: Lane, case: Case, output: Path, query_pack: P
     summary = output / "summary" / lane.name / case.name
     summary.mkdir(parents=True)
     pdf = case.name == "pdfkit"
+    resources = ("--threads=2", "--ram=4096") if pdf else ("--threads=1", "--ram=2048")
     source = source_root / ("FileUtilities.swift" if pdf else "Probe.swift")
     shutil.copyfile(case.source, source)
     if case.header is not None:
@@ -253,15 +289,18 @@ def validate_case(cli: Path, lane: Lane, case: Case, output: Path, query_pack: P
     write_json(summary / "sources.json", {p.name: digest_file(p) for p in sorted(source_root.iterdir())})
     build.write_text("\n".join(lines) + "\n", encoding="utf-8")
     database = case_root / "db"
-    require_command((str(cli), "database", "create", str(database), "--language=swift",
-                     f"--search-path={lane.pack}", f"--source-root={source_root}",
-                     f"--command={shlex.join(('bash', str(build)))}", "--threads=1", "--ram=2048",
-                     f"--common-caches={output / 'common-caches'}"),
-                    case_root, logs / "database-create.log", environment, deadline, 480)
+    try:
+        require_command((str(cli), "database", "create", str(database), "--language=swift",
+                         f"--search-path={lane.pack}", f"--source-root={source_root}",
+                         f"--command={shlex.join(('bash', str(build)))}", *resources,
+                         f"--common-caches={output / 'common-caches'}"),
+                        case_root, logs / "database-create.log", environment, deadline, 480)
+    finally:
+        retain_swift_logs(database, logs)
     sarif = summary / "swift.sarif"
     require_command((str(cli), "database", "analyze", str(database),
                      "codeql/swift-queries:codeql-suites/swift-code-scanning.qls",
-                     "--format=sarif-latest", f"--output={sarif}", "--threads=1", "--ram=2048",
+                     "--format=sarif-latest", f"--output={sarif}", *resources,
                      "--timeout=180", f"--common-caches={output / 'common-caches'}"),
                     case_root, logs / "database-analyze.log", environment, deadline, 480)
     errors, sources = sarif_evidence(sarif)
@@ -286,7 +325,7 @@ def validate_case(cli: Path, lane: Lane, case: Case, output: Path, query_pack: P
         for name in ("calls", "expressions", "inheritance", "candidates", "members"):
             bqrs = case_root / f"{name}.bqrs"
             require_command((str(cli), "query", "run", str(query_pack / f"{name}.ql"),
-                             f"--database={database}", f"--output={bqrs}", "--threads=1", "--ram=2048",
+                             f"--database={database}", f"--output={bqrs}", *resources,
                              f"--common-caches={output / 'common-caches'}"),
                             case_root, logs / f"query-{name}.log", environment, deadline, 180)
             require_command((str(cli), "bqrs", "decode", str(bqrs), "--format=csv",
@@ -353,7 +392,7 @@ def main() -> None:
     output.mkdir(mode=0o700)
     (output / "summary").mkdir()
     (output / "logs").mkdir()
-    deadline = time.monotonic() + 2100
+    deadline = time.monotonic() + 3600
     environment = {**os.environ, "CODEQL_EXTRACTOR_SWIFT_LOG_LEVELS":
                    "*:info,out:binary:no_logs,out:text:info,out:console:warning"}
     require_command((str(cli), "version", "--format=json"), output, output / "logs/version.log", environment, deadline, 30)
@@ -373,6 +412,7 @@ def main() -> None:
                "cli_sha256": digest_file(cli), "stock_tree_before": stock_before,
                "native_swift": native_swift, "xcode": "26.4.1", "sdk": "26.4", "architecture": "x86_64",
                "cache_policy": {"module_caches_and_databases": "fresh per lane and case",
+                                "traced_module_cache": "native compiler and extractor share the case-local path",
                                 "package_and_query_plan_cache": "shared task-owned common-caches"},
                "application_acceptance": False})
     try:
@@ -413,7 +453,7 @@ def main() -> None:
         results: list[Result] = []
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = [executor.submit(validate_case, cli, lane, case, output, query_pack, sdk, environment, deadline)
-                       for case in cases for lane in lanes]
+                       for case in cases if case.name != "pdfkit" for lane in lanes]
             try:
                 for future in as_completed(futures):
                     result = future.result()
@@ -424,6 +464,13 @@ def main() -> None:
                 for future in futures:
                     future.cancel()
                 raise
+        for case in cases:
+            if case.name == "pdfkit":
+                for lane in lanes:
+                    result = validate_case(cli, lane, case, output, query_pack, sdk, environment, deadline)
+                    results.append(result)
+                    write_json(output / "summary/completed.json", [item._asdict() for item in results])
+                    print(f"Validated {result.lane}/{result.case}: {result.notifications} extraction notifications", flush=True)
         validate_semantics(output)
         for lane in lanes:
             verify_resolution(cli, lane, output, environment, deadline)

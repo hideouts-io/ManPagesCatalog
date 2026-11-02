@@ -5,6 +5,8 @@ The original verified .tar.zst is retained for the pinned init action's tools
 input. A separate complete unpacking is available for controls before init.
 No bundle executable, extraction, tracer, or compiler is run by this helper.
 Use --output for a new absolute directory. Existing work is never overwritten.
+Vendor file and directory mtimes are preserved and verified at nanosecond
+precision, using the exact PAX decimal value when present.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import tarfile
 import threading
 import time
 from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path, PurePosixPath
 from types import FrameType
 from typing import Iterator, Literal, TypedDict
@@ -38,6 +41,8 @@ class Member(TypedDict):
     mode: int
     link: str
     sha256: str
+    mtime_ns: int
+    mtime_source: Literal["pax", "integer"]
 
 
 def sha256_file(path: Path) -> str:
@@ -201,6 +206,36 @@ def archive_path(name: str) -> str:
     return str(path)
 
 
+def archive_mtime_ns(member: tarfile.TarInfo) -> int:
+    if "mtime" not in member.pax_headers:
+        if type(member.mtime) is not int or not 0 <= member.mtime <= 9_223_372_036:
+            raise ValueError(f"Invalid integer archive mtime: {member.name}")
+        return member.mtime * 1_000_000_000
+    raw = member.pax_headers["mtime"]
+    if not isinstance(raw, str) or not 0 < len(raw) <= 64 or not re.fullmatch(r"[+-]?[0-9]+(?:\.[0-9]+)?", raw):
+        raise ValueError(f"Invalid PAX archive mtime: {member.name}")
+    try:
+        with localcontext() as context:
+            context.prec = 80
+            context.Emin = -100
+            context.Emax = 100
+            seconds = Decimal(raw)
+            if not seconds.is_finite() or not 0 <= seconds <= Decimal("9223372036.854775807"):
+                raise ValueError(f"Non-finite or out-of-range PAX archive mtime: {member.name}")
+            nanoseconds = seconds * Decimal(1_000_000_000)
+            if nanoseconds != nanoseconds.to_integral_value():
+                raise ValueError(f"PAX archive mtime exceeds exact nanosecond precision: {member.name}")
+            return int(nanoseconds)
+    except InvalidOperation as error:
+        raise ValueError(f"Malformed PAX archive mtime: {member.name}") from error
+
+
+def restore_mtime(path: Path, nanoseconds: int) -> None:
+    os.utime(path, ns=(path.lstat().st_atime_ns, nanoseconds), follow_symlinks=False)
+    if path.lstat().st_mtime_ns != nanoseconds:
+        raise ValueError(f"Unpacked stock mtime did not round-trip exactly: {path}")
+
+
 def member_metadata(member: tarfile.TarInfo) -> Member:
     path = archive_path(member.name)
     if member.mode < 0 or member.mode & ~0o777 or member.size < 0:
@@ -216,8 +251,10 @@ def member_metadata(member: tarfile.TarInfo) -> Member:
         raise ValueError(f"Pinned stock member has unexpected link metadata: {path}")
     if kind != "file" and member.size != 0:
         raise ValueError(f"Stock link/directory has unexpected payload bytes: {path}")
+    mtime_source: Literal["pax", "integer"] = "pax" if "mtime" in member.pax_headers else "integer"
     return {"path": path, "kind": kind, "size": member.size, "mode": member.mode,
-            "link": member.linkname, "sha256": ""}
+            "link": member.linkname, "sha256": "", "mtime_ns": archive_mtime_ns(member),
+            "mtime_source": mtime_source}
 
 
 def validate_members(members: dict[str, Member]) -> None:
@@ -301,6 +338,7 @@ def unpack(path: Path, destination: Path, members: dict[str, Member], output: Pa
                 raise ValueError(f"Unpacked stock file does not match its validated payload: {member['path']}")
         if stat.S_IMODE(target.lstat().st_mode) != member["mode"]:
             raise ValueError(f"Unpacked stock permissions differ: {member['path']}")
+        restore_mtime(target, member["mtime_ns"])
         if time.monotonic() >= deadline:
             raise TimeoutError("Stock bundle verification exceeded its preparation deadline")
 
@@ -348,6 +386,10 @@ def prepare(output: Path, pins_path: Path) -> None:
         "directories": sum(row["kind"] == "directory" for row in members.values()),
         "symlinks": 0, "hardlinks": 0, "links_and_special_members_rejected": True,
         "all_payloads_and_permissions_verified": True, "original_archive_preserved": True,
+        "all_archive_mtimes_verified": True,
+        "pax_mtime_entries": sum(row["mtime_source"] == "pax" for row in members.values()),
+        "integer_mtime_entries": sum(row["mtime_source"] == "integer" for row in members.values()),
+        "fractional_mtime_entries": sum(row["mtime_ns"] % 1_000_000_000 != 0 for row in members.values()),
         "codeql_executed": False, "compiler_extraction_executed": False,
         "seconds": round(time.monotonic() - started, 3)}
     write_json(output / "summary/status.json", summary)
