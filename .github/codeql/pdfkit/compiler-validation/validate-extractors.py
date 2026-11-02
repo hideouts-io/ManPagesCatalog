@@ -290,11 +290,23 @@ def validate_case(cli: Path, lane: Lane, case: Case, output: Path, query_pack: P
     build.write_text("\n".join(lines) + "\n", encoding="utf-8")
     database = case_root / "db"
     try:
-        require_command((str(cli), "database", "create", str(database), "--language=swift",
-                         f"--search-path={lane.pack}", f"--source-root={source_root}",
-                         f"--command={shlex.join(('bash', str(build)))}", *resources,
-                         f"--common-caches={output / 'common-caches'}"),
-                        case_root, logs / "database-create.log", environment, deadline, 480)
+        if pdf:
+            require_command((str(cli), "database", "init", "--language=swift", "--build-mode=manual",
+                             f"--source-root={source_root}", f"--search-path={lane.pack}",
+                             f"--common-caches={output / 'common-caches'}", str(database)),
+                            case_root, logs / "database-init.log", environment, deadline, 120)
+            require_command((str(cli), "database", "trace-command", *resources,
+                             f"--working-dir={source_root}", str(database), "--", "bash", str(build)),
+                            case_root, logs / "database-trace.log", environment, deadline, 480)
+            require_command((str(cli), "database", "finalize", "--finalize-dataset", *resources,
+                             f"--common-caches={output / 'common-caches'}", str(database)),
+                            case_root, logs / "database-finalize.log", environment, deadline, 480)
+        else:
+            require_command((str(cli), "database", "create", str(database), "--language=swift",
+                             f"--search-path={lane.pack}", f"--source-root={source_root}",
+                             f"--command={shlex.join(('bash', str(build)))}", *resources,
+                             f"--common-caches={output / 'common-caches'}"),
+                            case_root, logs / "database-create.log", environment, deadline, 480)
     finally:
         retain_swift_logs(database, logs)
     sarif = summary / "swift.sarif"
