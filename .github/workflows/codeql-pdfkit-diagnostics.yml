@@ -98,6 +98,53 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  macro-collision:
+    name: Identifier macro ${{ matrix.case }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [class-macro, class-protocol-macro, class-protocol]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        id: macro-setup
+        with:
+          languages: swift
+          tools: linked
+      - name: Compare native import and identifier-macro extraction
+        timeout-minutes: 40
+        env:
+          CODEQL_CLI: ${{ steps.macro-setup.outputs.codeql-path }}
+          PROBE_CASE: ${{ matrix.case }}
+          PROBE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test -d "$DEVELOPER_DIR"
+          bash .github/codeql/pdfkit/isolate-macro-collision.sh "$CODEQL_CLI" \
+            ".github/codeql/pdfkit/macro-controls/$PROBE_CASE" "$RUNNER_TEMP/macro-collision" "$PROBE_HEAD_SHA"
+      - name: Upload fixture-only macro collision evidence
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: identifier-macro-${{ matrix.case }}
+          path: |
+            ${{ runner.temp }}/macro-collision/src/*
+            ${{ runner.temp }}/macro-collision/commands/*
+            ${{ runner.temp }}/macro-collision/logs/*
+            ${{ runner.temp }}/macro-collision/summary/*
+            ${{ runner.temp }}/macro-collision/native-symbolgraph/*
+            ${{ runner.temp }}/macro-collision/swift.sarif
+            ${{ runner.temp }}/macro-collision/db/log/**
+          if-no-files-found: error
+          retention-days: 7
+
   matching-compiler:
     if: github.event_name == 'workflow_dispatch'
     name: Swift 6.3.1 extraction with current analysis
@@ -168,5 +215,6 @@ jobs:
             ${{ runner.temp }}/sdk-lookup/exit-status.json
             ${{ runner.temp }}/sdk-lookup/import-only.log
             ${{ runner.temp }}/sdk-lookup/macro-reference.log
+            ${{ runner.temp }}/sdk-lookup/symbolgraph.log
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
