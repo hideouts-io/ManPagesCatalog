@@ -157,6 +157,24 @@ def csv_rows(path: Path, columns: int) -> Counter[tuple[str, ...]]:
     return Counter(tuple(row) for row in rows[1:])
 
 
+def validate_alias_diagnostic(notification: Mapping[str, object], source: Path) -> None:
+    """Require each retained negative-control error, including its exact location."""
+    message = object_value(notification.get("message"), "negative alias diagnostic message")
+    expected = f"Compiler error in {source} with error message cannot find 'ValidationFunctionAlias' in scope"
+    if message.get("text") != expected or notification.get("level") != "none":
+        raise RuntimeError("Negative alias control has an unexpected compiler message or level")
+    locations = array_value(notification.get("locations"), "negative alias diagnostic locations")
+    if len(locations) != 1:
+        raise RuntimeError("Negative alias control requires exactly one location per diagnostic")
+    location = object_value(locations[0], "negative alias diagnostic location")
+    physical = object_value(location.get("physicalLocation"), "negative alias physical location")
+    artifact = object_value(physical.get("artifactLocation"), "negative alias source artifact")
+    region = object_value(physical.get("region"), "negative alias source region")
+    if artifact.get("uri") != "Probe.swift" or artifact.get("uriBaseId") != "%SRCROOT%" or region != {
+            "startLine": 4, "startColumn": 5, "endColumn": 6}:
+        raise RuntimeError("Negative alias control has an unexpected source location")
+
+
 def verify_resolution(cli: Path, lane: Lane, output: Path, environment: Mapping[str, str],
                       deadline: float) -> None:
     log = output / "logs" / f"resolve-{lane.name}.log"
@@ -259,6 +277,8 @@ def validate_case(cli: Path, lane: Lane, case: Case, output: Path, query_pack: P
             message = object_value(error["message"], "compiler diagnostic message")
             if case.message is None or case.message not in text_value(message["text"], "compiler diagnostic text"):
                 raise RuntimeError(f"{lane.name}/{case.name}: unexpected compiler diagnostic")
+            if case.name == "alias-negative":
+                validate_alias_diagnostic(error, source)
     expected_source = "Valid.swift" if case.native_exit != 0 else source.name
     if expected_source not in sources:
         raise RuntimeError(f"{lane.name}/{case.name}: expected source {expected_source} was not extracted")
@@ -385,7 +405,7 @@ def main() -> None:
             Case("aliases-feature-on", feature / "Alias.swift", feature / "Probe.h",
                  feature / "module.modulemap",
                  ("-enable-experimental-feature", "ImportMacroAliases"), 0, (0, 0, 0), None),
-            Case("alias-negative", feature / "Alias.swift", feature / "Probe.h", feature / "module.modulemap", (), 1, (1, 1, 1),
+            Case("alias-negative", feature / "Alias.swift", feature / "Probe.h", feature / "module.modulemap", (), 1, (2, 2, 2),
                  "cannot find 'ValidationFunctionAlias' in scope"),
             Case("pdfkit", probe / "baseline/FileUtilities.swift", None, None, (), 0, (1, 1, 0),
                  "reference to 'NSAccessibilityElement' is ambiguous"),

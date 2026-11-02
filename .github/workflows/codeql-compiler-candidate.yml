@@ -31,11 +31,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: github/codeql-action/setup-codeql@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
-        id: setup
-        with:
-          languages: swift
-          tools: linked
+      - name: Prepare the verified official CodeQL bundle before tracing
+        id: stock
+        timeout-minutes: 10
+        run: |
+          python3 .github/codeql/pdfkit/compiler-candidate/setup-stock-codeql.py \
+            --output "$RUNNER_TEMP/stock-codeql"
+          archive=$(cat "$RUNNER_TEMP/stock-codeql/summary/archive-path.txt")
+          cli=$(cat "$RUNNER_TEMP/stock-codeql/summary/cli-path.txt")
+          test "$archive" = "$RUNNER_TEMP/stock-codeql/codeql-bundle-osx64.tar.zst"
+          test "$cli" = "$RUNNER_TEMP/stock-codeql/bundle/codeql/codeql"
+          printf 'archive=%s\ncli=%s\n' "$archive" "$cli" >> "$GITHUB_OUTPUT"
       - name: Build isolated unpatched control and compiler correction
         timeout-minutes: 25
         run: |
@@ -44,7 +50,7 @@ jobs:
       - name: Compare macro controls and real PDFKit semantics
         timeout-minutes: 40
         env:
-          CODEQL_CLI: ${{ steps.setup.outputs.codeql-path }}
+          CODEQL_CLI: ${{ steps.stock.outputs.cli }}
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           python3 .github/codeql/pdfkit/compiler-validation/validate-extractors.py \
@@ -53,6 +59,8 @@ jobs:
             --patched-pack "$GITHUB_WORKSPACE/build/compiler-candidate/pack-C" \
             --output "$RUNNER_TEMP/compiler-validation" \
             --candidate-revision "$CANDIDATE_REVISION"
+          jq -e '.differential_fixture_validation == true and .case_count == 24 and .stock_bundle_unchanged == true' \
+            "$RUNNER_TEMP/compiler-validation/summary/verdict.json"
       - name: Install and resolve required Metal toolchain
         id: metal
         timeout-minutes: 10
@@ -70,7 +78,7 @@ jobs:
       - name: Analyze the complete application with the candidate
         timeout-minutes: 25
         env:
-          CODEQL_CLI: ${{ steps.setup.outputs.codeql-path }}
+          CODEQL_CLI: ${{ steps.stock.outputs.cli }}
           EXTERNAL_TOOLCHAINS_DIR: ${{ steps.metal.outputs.search-path }}
           METAL_TOOLCHAIN_IDENTIFIER: ${{ steps.metal.outputs.identifier }}
         run: |
@@ -83,6 +91,8 @@ jobs:
         with:
           name: swift-compiler-candidate-evidence
           path: |
+            ${{ runner.temp }}/stock-codeql/summary/**
+            ${{ runner.temp }}/stock-codeql/logs/**
             ${{ github.workspace }}/build/compiler-candidate/summary/**
             ${{ github.workspace }}/build/compiler-candidate/logs/**
             ${{ runner.temp }}/compiler-validation/summary/**

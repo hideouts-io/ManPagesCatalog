@@ -3,9 +3,10 @@
 
 Run on macOS 26 Intel with Xcode 26.4.1, using --output for a new ignored
 directory beneath the checkout. B rebuilds the unpatched Swift importer object;
-C rebuilds the same object with the pinned guard patch. Each uses independent
-Bazel caches and the public build/install target. The stock CodeQL bundle is
-neither an input nor a destination.
+C rebuilds the same object with the pinned guard patch. Both sequential builds
+share a new task-owned Bazel build cache and use the public build/install target.
+Sources, rebuilt objects, compiler-library copies, and installed packs remain
+separate. The stock CodeQL bundle is neither an input nor a destination.
 
 The unchanged public semmle_code stub omits internal Linux glibc checks and Rust
 universal assembly. Both configured Swift closures must contain zero targets
@@ -213,6 +214,7 @@ def run_command(command: list[str], cwd: Path, output: Path, name: str,
     if started >= deadline:
         raise RuntimeError(f"Experiment deadline reached before {name}")
     reason = ""
+    print(f"Starting compiler candidate stage: {name}", flush=True)
     with stdout.open("xb") as out, stderr.open("xb") as err:
         process = subprocess.Popen(command, cwd=cwd, env=environment, stdout=out,
                                    stderr=err, start_new_session=True)
@@ -473,6 +475,8 @@ def build(output: Path, inputs: Path, host: dict[str, str]) -> None:
             raise ValueError(f"Swift Git blob identity mismatch: {row['name']}")
     manifests: dict[str, list[PackageFile]] = {}
     closure_counts: dict[str, int] = {}
+    cache = output / "bazel-build-cache"
+    cache.mkdir()
     for variant in ("B", "C"):
         variant_source = output / ("source-" + variant)
         importer = variant_source / "lib/ClangImporter/ImportMacro.cpp"
@@ -500,8 +504,6 @@ def build(output: Path, inputs: Path, host: dict[str, str]) -> None:
         run_command(["/usr/bin/xcrun", "ar", "-r", str(prebuilt / library.name), str(object_file)],
                     output, output, "replace-object-" + variant, environment, deadline, ())
         verify_replacement(original_members, archive_members(prebuilt / library.name), object_file)
-        cache = output / ("bazel-" + variant)
-        cache.mkdir()
         arguments = bazel_arguments(bazel, prebuilt, cache, host)
         query = ["cquery" if item == "run" else item for item in arguments]
         run_command(query + ["--output=label", "deps(//swift:install)"], source, output,
@@ -553,7 +555,7 @@ def build(output: Path, inputs: Path, host: dict[str, str]) -> None:
         "compiler_regression_tests_run": False, "experimental_only": True, "host": host,
         "pack_files": {variant: sum(row["type"] == "file" for row in rows) for variant, rows in manifests.items()},
         "pack_entries": {variant: len(rows) for variant, rows in manifests.items()},
-        "pack_differences": differences, "independent_bazel_caches": True,
+        "pack_differences": differences, "shared_task_owned_bazel_build_cache": True,
         "configured_closure_counts": closure_counts, "semmle_code_targets": [],
         "standalone_stub_files": stub_files,
         "standalone_stub_limits": "Unchanged public stub omits internal Linux glibc checks and Rust universal assembly; zero selected Swift targets depend on it. No vendor release or regression testing claimed.",
