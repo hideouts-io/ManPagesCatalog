@@ -1,0 +1,16 @@
+{
+  "codeql_commit": "a1575b98a8cc19bcfa7bb6cb41be688cb3dae65c",
+  "codeql_archive_sha256": "95ccf762f6b226a10b165b7012f647ed55e17c5ab0d86fb12e5f229c2dcbce69",
+  "swift_prebuilt_sha256": "f5fddabc442a5c7664be4f022f09889177f420477060c1199eb714394987ad93",
+  "resource_dir_macos_sha256": "0589f8b61a87447d03b4b81b915f6b341ff8bcb123effda586cba46cc9487bd6",
+  "picosha2_sha256": "3082b319e6281be54b77b7619a38e5718266fca5e693bc4e23dd76bb17bc6420",
+  "bazel_version": "9.0.0",
+  "bazel_darwin_arm64_sha256": "2c3cce548a4b6a97a2a5267712187b784b52714c4a2b0613e7386b15669d783c",
+  "bazel_darwin_x86_64_sha256": "aa7e5fc364eaaba7f4f271dbf8c14172a5433f663cca6b130325df4b6569b3f0",
+  "candidate_patch_sha256": "ac86359f20f5287672f0879248ff1d49271d3fe88a6d7e53b32774c301a1a76a",
+  "private_source_manifest_sha256": "1099b98b0a562675989a52ced134880dd0ed62f657bdd96ae0be4d9cc0e2c2b4",
+  "codeql_archive_bytes": 51618834,
+  "swift_prebuilt_bytes": 125119625,
+  "resource_dir_macos_bytes": 433044499,
+  "picosha2_bytes": 8159
+}
