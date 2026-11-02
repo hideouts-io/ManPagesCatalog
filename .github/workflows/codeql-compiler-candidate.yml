@@ -2,12 +2,6 @@ name: Swift compiler candidate validation
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [main]
-    paths:
-      - .github/codeql/pdfkit/compiler-candidate/**
-      - .github/codeql/pdfkit/compiler-validation/**
-      - .github/workflows/codeql-compiler-candidate.yml
 
 permissions:
   contents: read
@@ -16,7 +10,8 @@ concurrency:
   group: compiler-candidate-${{ github.ref }}
   cancel-in-progress: true
 
-# Additional controlled evidence; the required CodeQL workflow retains acceptance.
+# The required CodeQL workflow runs these controls automatically before app tracing.
+# This manual entry point retains the separate full-application experiment.
 jobs:
   differential:
     name: Compare released, control, and patched Swift extractors

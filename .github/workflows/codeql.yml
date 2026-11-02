@@ -101,17 +101,24 @@ jobs:
             --format=json > "$RUNNER_TEMP/initialized-codeql/extractor.json"
           selected_pack=$(jq -er 'select(type == "string" and length > 0)' "$RUNNER_TEMP/initialized-codeql/extractor.json")
           test "$(cd "$selected_pack" && pwd -P)" = "$(cd "$expected_pack" && pwd -P)"
+          shasum -a 256 "$CODEQL_CLI" "$(dirname "$CODEQL_CLI")/swift/tools/osx64/extractor.real" \
+            "$(dirname "$CODEQL_CLI")/swift/swift.dbscheme" > "$RUNNER_TEMP/initialized-codeql/stock-before.sha256"
       - name: Build native application
         # Resolve Metal before CodeQL tracing changes toolchain discovery (codeql-action#3978).
         env:
           EXTERNAL_TOOLCHAINS_DIR: ${{ steps.metal.outputs.search-path }}
           METAL_TOOLCHAIN_IDENTIFIER: ${{ steps.metal.outputs.identifier }}
         run: |
+          set -euo pipefail
           xcodebuild build -project ManPageCatalog.xcodeproj -scheme ManPageCatalog \
             -configuration Debug -destination 'platform=macOS,arch=x86_64' -derivedDataPath "$RUNNER_TEMP/codeql-build" \
             ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_EXPLICIT_MODULES=NO SWIFT_COMPILATION_MODE=wholemodule \
             COMPILATION_CACHE_ENABLE_CACHING=NO SWIFT_ENABLE_COMPILE_CACHE=NO SWIFT_USE_INTEGRATED_DRIVER=NO \
-            CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO TOOLCHAINS="$METAL_TOOLCHAIN_IDENTIFIER com.apple.dt.toolchain.XcodeDefault"
+            CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO TOOLCHAINS="$METAL_TOOLCHAIN_IDENTIFIER com.apple.dt.toolchain.XcodeDefault" \
+            2>&1 | tee "$RUNNER_TEMP/initialized-codeql/application-build.log"
+          grep -q 'CompileMetalFile ' "$RUNNER_TEMP/initialized-codeql/application-build.log"
+          grep -q 'MetalLink ' "$RUNNER_TEMP/initialized-codeql/application-build.log"
+          test -s "$RUNNER_TEMP/codeql-build/Build/Products/Debug/SwiftTerm_SwiftTerm.bundle/Contents/Resources/default.metallib"
       - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           upload: never
@@ -156,6 +163,13 @@ jobs:
             select(startswith("ManPageCatalog/"))] | unique | .[]' \
             "$SARIF_FILE" | LC_ALL=C sort > "$RUNNER_TEMP/initialized-codeql/extracted-sources.txt"
           cmp "$RUNNER_TEMP/initialized-codeql/expected-sources.txt" "$RUNNER_TEMP/initialized-codeql/extracted-sources.txt"
+      - name: Require stock tools to remain unchanged after application analysis
+        env:
+          CODEQL_CLI: ${{ steps.init.outputs.codeql-path }}
+        run: |
+          shasum -a 256 "$CODEQL_CLI" "$(dirname "$CODEQL_CLI")/swift/tools/osx64/extractor.real" \
+            "$(dirname "$CODEQL_CLI")/swift/swift.dbscheme" > "$RUNNER_TEMP/initialized-codeql/stock-after.sha256"
+          cmp "$RUNNER_TEMP/initialized-codeql/stock-before.sha256" "$RUNNER_TEMP/initialized-codeql/stock-after.sha256"
       - name: Upload public compiler validation evidence
         if: success() || failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
