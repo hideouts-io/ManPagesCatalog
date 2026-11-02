@@ -1,7 +1,6 @@
 import Foundation
 import Combine
 import Darwin
-import CryptoKit
 
 enum LibraryPhase: String {
     case ready = "Ready"
@@ -71,6 +70,7 @@ final class LibraryStore: ObservableObject {
     private(set) var indexingProgressGeneration: UUID?
     private let directory: URL
     private let defaults: UserDefaults
+    let sourceAuthority: ManualSourceAuthority
     private let checkpointFile: DiscoveryCheckpointFile
     private var opened = false
 
@@ -78,7 +78,9 @@ final class LibraryStore: ObservableObject {
         self.directory = directory
         self.defaults = defaults
         checkpointFile = DiscoveryCheckpointFile(url: directory.appendingPathComponent("scan-checkpoint-v1.json"))
-        additionalRoots = defaults.stringArray(forKey: "manualRoots") ?? []
+        let selectedRoots = defaults.stringArray(forKey: "manualRoots") ?? []
+        additionalRoots = selectedRoots
+        sourceAuthority = ManualSourceAuthority(selectedRoots: selectedRoots.map { URL(fileURLWithPath: $0) })
     }
 
     private(set) var sections: [String] = []
@@ -181,6 +183,7 @@ final class LibraryStore: ObservableObject {
         cancellationRequested = nil
         let request = UUID()
         operationID = request
+        let access = sourceAuthority.snapshot()
         errorMessage = nil
         isIndexing = true
         phase = .discovering
@@ -191,9 +194,11 @@ final class LibraryStore: ObservableObject {
                 try Task.checkCancellation()
                 try initializeLibrary()
                 guard let index else { throw ManualToolError(message: "Search index was not initialized.") }
-                let selected = try await checkpoint()
+                let saved = try await checkpoint()
                 try Task.checkCancellation()
                 guard request == operationID else { return }
+                try sourceAuthority.requireCurrent(access)
+                let selected = try reauthorizedDiscoveryCheckpoint(saved, access: access)
                 scanMode = selected.title
                 await checkpointFile.activate(request)
                 let cache = Dictionary(try await index.metadata().map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
@@ -504,12 +509,14 @@ final class LibraryStore: ObservableObject {
 
     func addRoot(_ url: URL) {
         if !additionalRoots.contains(url.path) { additionalRoots.append(url.path) }
+        sourceAuthority.replaceSelectedRoots(additionalRoots.map { URL(fileURLWithPath: $0) })
         defaults.set(additionalRoots, forKey: "manualRoots")
         scanSelectedRoots()
     }
 
     func removeRoot(_ path: String) {
         additionalRoots.removeAll { $0 == path }
+        sourceAuthority.replaceSelectedRoots(additionalRoots.map { URL(fileURLWithPath: $0) })
         defaults.set(additionalRoots, forKey: "manualRoots")
         scan()
     }
@@ -543,6 +550,7 @@ final class LibraryStore: ObservableObject {
     }
 
     private func enrich(pending: [ManualPage], request: UUID, index: ManualSearchIndex, recorder: ScanPerformanceRecorder?) async throws {
+        let access = sourceAuthority.snapshot()
         // Formatting and SQLite transactions stay bounded to four manuals; UI metadata is coalesced.
         let positions = Dictionary(uniqueKeysWithValues: pages.enumerated().map { ($0.element.id, $0.offset) })
         var buffered: [ManualIndexOutcome] = []
@@ -561,11 +569,7 @@ final class LibraryStore: ObservableObject {
                     for page in batch {
                         group.addTask {
                             do {
-                                let input = try await manualInput(source: page.source)
-                                let fingerprint = SHA256.hash(data: input.bytes).map { String(format: "%02x", $0) }.joined()
-                                guard fingerprint == page.fingerprint else {
-                                    throw ManualToolError(message: "Manual source changed after discovery: \(page.source.path). Run a scan to discover its current version before indexing.")
-                                }
+                                let input = try await manualInput(page: page, access: access)
                                 let formatted = try await formattedManualText(input: input)
                                 let description = descriptionFromFormattedManual(formatted.text)
                                 return ManualIndexOutcome(id: page.id, description: description,
@@ -585,10 +589,12 @@ final class LibraryStore: ObservableObject {
                 await recorder?.recordFormatterBatch(seconds: ProcessInfo.processInfo.systemUptime - formatBegan)
                 try Task.checkCancellation()
                 guard request == operationID, outcomes.count == batch.count else { throw CancellationError() }
+                try sourceAuthority.requireCurrent(access)
                 let records = outcomes.compactMap(\.record)
                 if !records.isEmpty {
                     let began = ProcessInfo.processInfo.systemUptime
                     try await index.store(records: records)
+                    try sourceAuthority.requireCurrent(access)
                     await recorder?.recordIndexTransaction(seconds: ProcessInfo.processInfo.systemUptime - began)
                 }
                 // Only committed records may enter the retained inventory, including on cancellation.
@@ -603,31 +609,31 @@ final class LibraryStore: ObservableObject {
                                                active: 0, succeeded: succeeded, failed: failed)
                 guard request == operationID else { throw CancellationError() }
                 if buffered.count >= 64 || ProcessInfo.processInfo.systemUptime - publishedAt >= 0.25 {
-                    await publishIndexMetadata(buffered, positions: positions, completed: completed, request: request, recorder: recorder)
+                    await publishIndexMetadata(buffered, positions: positions, completed: completed, request: request, access: access, recorder: recorder)
                     buffered.removeAll(keepingCapacity: true)
                     publishedAt = ProcessInfo.processInfo.systemUptime
                 }
                 try Task.checkCancellation()
                 if completed % 128 == 0 {
-                    await publishIndexMetadata(buffered, positions: positions, completed: completed, request: request, recorder: recorder)
+                    await publishIndexMetadata(buffered, positions: positions, completed: completed, request: request, access: access, recorder: recorder)
                     buffered.removeAll(keepingCapacity: true)
                     try await saveDiscovery(request: request)
                 }
             }
         } catch {
             if request == operationID {
-                await publishIndexMetadata(buffered, positions: positions, completed: succeeded + failed, request: request, recorder: recorder)
+                await publishIndexMetadata(buffered, positions: positions, completed: succeeded + failed, request: request, access: access, recorder: recorder)
                 await recorder?.recordIndexing(completed: succeeded + failed, queued: pending.count - succeeded - failed,
                                                active: 0, succeeded: succeeded, failed: failed)
             }
             throw error
         }
-        await publishIndexMetadata(buffered, positions: positions, completed: succeeded + failed, request: request, recorder: recorder)
+        await publishIndexMetadata(buffered, positions: positions, completed: succeeded + failed, request: request, access: access, recorder: recorder)
     }
 
     private func publishIndexMetadata(_ outcomes: [ManualIndexOutcome], positions: [String: Int], completed: Int,
-                                      request: UUID, recorder: ScanPerformanceRecorder?) async {
-        guard request == operationID, !outcomes.isEmpty else { return }
+                                      request: UUID, access: ManualSourceAccess, recorder: ScanPerformanceRecorder?) async {
+        guard request == operationID, sourceAuthority.snapshot().generation == access.generation, !outcomes.isEmpty else { return }
         let began = ProcessInfo.processInfo.systemUptime
         let progressGeneration = InteractionDiagnostics.isEnabled ? UUID() : nil
         if let progressGeneration { InteractionDiagnostics.progressStarted(generation: progressGeneration) }

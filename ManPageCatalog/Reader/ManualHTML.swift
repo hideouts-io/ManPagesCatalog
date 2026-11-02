@@ -3,6 +3,10 @@ import Foundation
 /// mandoc preserves semantic roff markup; an app-owned stylesheet adds responsive reading.
 func manualHTML(source: URL) async throws -> String {
     let input = try await manualInput(source: source)
+    return try await manualHTML(input: input)
+}
+
+func manualHTML(input: ManualInput) async throws -> String {
     let result = try await formatManual(input: input, arguments: ["-Thtml", "-O", "fragment,man=manpagescatalog://open?name=%N&section=%S"])
     let fragment = String(decoding: result.bytes, as: UTF8.self)
     let notice = result.diagnostic.isEmpty ? "" : "<aside role=\"note\"><strong>Formatting issue in the original manual</strong><p>Some markup could not be interpreted. Review the source for exact formatting. PDF export requires an error-free rendering.</p><pre>" + escapedHTML(result.diagnostic) + "</pre></aside>"
