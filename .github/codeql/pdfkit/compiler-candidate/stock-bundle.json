@@ -1,0 +1,20 @@
+{
+  "version": "2.27.3",
+  "release_tag": "codeql-bundle-v2.27.3",
+  "filename": "codeql-bundle-osx64.tar.zst",
+  "bytes": 878370760,
+  "sha256": "c773b4654a641d02967f40d994bab1850fd8bc3bddb3d20f9af17b0cca3c9a29",
+  "checksum_filename": "codeql-bundle-osx64.tar.zst.checksum.txt",
+  "checksum_bytes": 94,
+  "checksum_sha256": "cb63408d87f11941955a581d1970118ce468b4f8cfd46664e485ac690420e4e9",
+  "release_id": 415284177,
+  "asset_id": 648292275,
+  "archive_root": "codeql",
+  "cli_relative_path": "codeql/codeql",
+  "max_entries": 200000,
+  "max_unpacked_bytes": 8000000000,
+  "expected_entries": 42974,
+  "expected_regular_files": 37317,
+  "expected_directories": 5657,
+  "expected_regular_bytes": 3137435860
+}

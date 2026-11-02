@@ -1,0 +1,7 @@
+script import json, os, lldb; target: lldb.SBTarget = lldb.debugger.GetSelectedTarget(); launch: lldb.SBLaunchInfo = target.GetLaunchInfo(); launch.SetEnvironmentEntries(["DYLD_LIBRARY_PATH=" + os.environ["PROBE_DEBUG_LIBRARY_PATH"]], True); target.SetLaunchInfo(launch)
+breakpoint set --name clang::Sema::DiagnoseAmbiguousLookup
+breakpoint command add --one-liner "thread backtrace -c 80" 1
+breakpoint modify --auto-continue true 1
+run
+breakpoint list 1
+script target: lldb.SBTarget = lldb.debugger.GetSelectedTarget(); process: lldb.SBProcess = target.GetProcess(); breakpoint: lldb.SBBreakpoint = target.FindBreakpointByID(1); exited: bool = process.GetState() == lldb.eStateExited; child_status: int = process.GetExitStatus(); locations: int = breakpoint.GetNumLocations(); resolved: int = breakpoint.GetNumResolvedLocations(); hits: int = breakpoint.GetHitCount(); capture_status: int = child_status if exited and locations > 0 and 0 <= child_status <= 255 else 125; status_file = open(os.path.join(os.environ["PROBE_DEBUG_INVOCATION"], "status.json"), "x", encoding="utf-8"); json.dump({"process_state": lldb.SBDebugger.StateAsCString(process.GetState()), "child_exit_status": child_status if exited else None, "breakpoint_locations": locations, "breakpoint_resolved_locations": resolved, "breakpoint_hits": hits, "capture_verified": exited and hits > 0, "capture_exit_status": capture_status}, status_file, sort_keys=True); status_file.write("\n"); status_file.close(); lldb.debugger.HandleCommand("quit " + str(capture_status))

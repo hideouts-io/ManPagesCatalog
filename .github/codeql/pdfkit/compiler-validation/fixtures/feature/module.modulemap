@@ -1,0 +1,4 @@
+module FeatureProbe {
+    header "Probe.h"
+    export *
+}

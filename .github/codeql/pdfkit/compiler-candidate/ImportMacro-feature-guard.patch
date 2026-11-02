@@ -1,0 +1,11 @@
+--- a/lib/ClangImporter/ImportMacro.cpp
++++ b/lib/ClangImporter/ImportMacro.cpp
+@@ -410,3 +409,0 @@
+-  if (!DC->getASTContext().LangOpts.hasFeature(Feature::ImportMacroAliases))
+-    return nullptr;
+-
+@@ -643,0 +641,4 @@
++
++      // Declaration-alias lookup is unnecessary when aliases cannot be imported.
++      if (!DC->getASTContext().LangOpts.hasFeature(Feature::ImportMacroAliases))
++        return nullptr;

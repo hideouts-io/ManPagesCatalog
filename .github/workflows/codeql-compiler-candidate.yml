@@ -1,0 +1,89 @@
+name: Swift compiler candidate validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compiler-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+# The required CodeQL workflow runs these controls automatically before app tracing.
+# This manual entry point retains the separate full-application experiment.
+jobs:
+  differential:
+    name: Compare released, control, and patched Swift extractors
+    runs-on: macos-26-intel
+    timeout-minutes: 165
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      CODEQL_EXTRACTOR_SWIFT_LOG_LEVELS: "*:info,out:binary:no_logs,out:text:info,out:console:warning"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install and resolve required Metal toolchain
+        id: metal
+        timeout-minutes: 10
+        run: bash .github/codeql/prepare-metal-toolchain.sh "$RUNNER_TEMP" "$GITHUB_OUTPUT"
+      - name: Prepare the verified official CodeQL bundle before tracing
+        id: stock
+        timeout-minutes: 10
+        run: |
+          python3 .github/codeql/pdfkit/compiler-candidate/setup-stock-codeql.py \
+            --output "$RUNNER_TEMP/stock-codeql"
+          archive=$(cat "$RUNNER_TEMP/stock-codeql/summary/archive-path.txt")
+          cli=$(cat "$RUNNER_TEMP/stock-codeql/summary/cli-path.txt")
+          test "$archive" = "$RUNNER_TEMP/stock-codeql/codeql-bundle-osx64.tar.zst"
+          test "$cli" = "$RUNNER_TEMP/stock-codeql/bundle/codeql/codeql"
+          printf 'archive=%s\ncli=%s\n' "$archive" "$cli" >> "$GITHUB_OUTPUT"
+      - name: Build isolated unpatched control and compiler correction
+        timeout-minutes: 35
+        run: |
+          python3 .github/codeql/pdfkit/compiler-candidate/build-extractors.py \
+            --output "$GITHUB_WORKSPACE/build/compiler-candidate"
+      - name: Compare macro controls and real PDFKit semantics
+        timeout-minutes: 80
+        env:
+          CODEQL_CLI: ${{ steps.stock.outputs.cli }}
+          CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 .github/codeql/pdfkit/compiler-validation/validate-extractors.py \
+            --codeql "$CODEQL_CLI" \
+            --control-pack "$GITHUB_WORKSPACE/build/compiler-candidate/pack-B" \
+            --patched-pack "$GITHUB_WORKSPACE/build/compiler-candidate/pack-C" \
+            --output "$RUNNER_TEMP/compiler-validation" \
+            --candidate-revision "$CANDIDATE_REVISION"
+          jq -e '.differential_fixture_validation == true and .case_count == 24 and .stock_bundle_unchanged == true' \
+            "$RUNNER_TEMP/compiler-validation/summary/verdict.json"
+      - name: Analyze the complete application with the candidate
+        timeout-minutes: 25
+        env:
+          CODEQL_CLI: ${{ steps.stock.outputs.cli }}
+          EXTERNAL_TOOLCHAINS_DIR: ${{ steps.metal.outputs.search-path }}
+          METAL_TOOLCHAIN_IDENTIFIER: ${{ steps.metal.outputs.identifier }}
+        run: |
+          bash .github/codeql/pdfkit/compiler-validation/validate-application.sh \
+            "$CODEQL_CLI" "$GITHUB_WORKSPACE/build/compiler-candidate/pack-C" \
+            "$RUNNER_TEMP/compiler-application"
+      - name: Upload public controlled experiment evidence
+        if: success() || failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: swift-compiler-candidate-evidence
+          path: |
+            ${{ runner.temp }}/metal-evidence/**
+            ${{ runner.temp }}/stock-codeql/summary/**
+            ${{ runner.temp }}/stock-codeql/logs/**
+            ${{ github.workspace }}/build/compiler-candidate/summary/**
+            ${{ github.workspace }}/build/compiler-candidate/logs/**
+            ${{ runner.temp }}/compiler-validation/summary/**
+            ${{ runner.temp }}/compiler-validation/logs/**
+            ${{ runner.temp }}/compiler-application/summary/**
+            ${{ runner.temp }}/compiler-application/logs/**
+          if-no-files-found: error
+          retention-days: 7
