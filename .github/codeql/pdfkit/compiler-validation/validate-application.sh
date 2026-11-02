@@ -72,10 +72,7 @@ if [[ "$error_count" != 0 ]]; then
   printf 'Candidate application extraction reported %s compiler diagnostics; no acceptance or upload is permitted.\n' "$error_count" >&2
   exit 1
 fi
-jq -er '[.runs[].invocations[].toolExecutionNotifications[] |
-  select(.descriptor.id == "swift/diagnostics/successfully-extracted-files") |
-  .locations[].physicalLocation.artifactLocation.uri |
-  select(startswith("ManPageCatalog/"))] | unique | .[]' \
+jq -er -f .github/codeql/swift-application-sources.jq \
   "$sarif_file" | LC_ALL=C sort > "$application_output/summary/extracted-sources.txt"
 cmp "$application_output/summary/expected-sources.txt" "$application_output/summary/extracted-sources.txt"
 shasum -a 256 "$codeql_cli" "$stock_pack/tools/osx64/extractor.real" > "$application_output/summary/stock-after.sha256"

@@ -146,12 +146,10 @@ jobs:
         env:
           SARIF_FILE: ${{ runner.temp }}/codeql-sarif/swift.sarif
         run: |
+          set -euo pipefail
           git ls-files -- 'ManPageCatalog/*.swift' | LC_ALL=C sort > "$RUNNER_TEMP/initialized-codeql/expected-sources.txt"
           test -s "$RUNNER_TEMP/initialized-codeql/expected-sources.txt"
-          jq -er '[.runs[].invocations[].toolExecutionNotifications[] |
-            select(.descriptor.id == "swift/diagnostics/successfully-extracted-files") |
-            .locations[].physicalLocation.artifactLocation.uri |
-            select(startswith("ManPageCatalog/"))] | unique | .[]' \
+          jq -er -f .github/codeql/swift-application-sources.jq \
             "$SARIF_FILE" | LC_ALL=C sort > "$RUNNER_TEMP/initialized-codeql/extracted-sources.txt"
           cmp "$RUNNER_TEMP/initialized-codeql/expected-sources.txt" "$RUNNER_TEMP/initialized-codeql/extracted-sources.txt"
       - name: Require stock tools to remain unchanged after application analysis
