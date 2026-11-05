@@ -194,7 +194,7 @@ Percent-encode names and queries when constructing links. Manual links resolve a
 
 ### Source Details
 
-Source Details shows the original manual path, collection root, language when declared, and locations/aliases with identical content. **Reveal Source in Finder** opens the original file’s location. Distinct content versions remain separate search results; compare their headers and paths.
+Source Details shows the original manual path, collection root, language when declared, and locations/aliases with identical content. **Recorded catalog issue** shows the latest indexing or formatting issue for that content, updating after indexing without reopening the reader. The recorded issue can come from another identical source location; reading and PDF export report their own results. **Reveal Source in Finder** opens the original file’s location. Distinct content versions remain separate search results; compare their headers and paths.
 
 The executable path is resolved independently from the app’s PATH. A manual can describe an API, file format, or command that is not installed. An executable with the same name does not establish package or version compatibility.
 
@@ -265,7 +265,7 @@ Drafts, browsing history, and terminal scrollback remain in memory. The app does
 | **No matching manuals** | Press **⌘K** to clear section/source restrictions. Try an exact name. Confirm discovery has reached the intended location; full-text results require indexing. |
 | **No manuals discovered** | Open Scan & Sources, run Standard Scan, and inspect coverage. Add the specific folder if its documentation lives elsewhere. Check a restrictive `MANPATH`. |
 | **Description not indexed yet** | Let indexing proceed or choose **Index Discovered Manuals**. Name search and reading can already work. |
-| **Description unavailable / indexing issue** | Expand the manual diagnostics in Scan & Sources. A formatting diagnostic can coexist with useful text; an empty description is not automatically an extraction failure. |
+| **Description unavailable / indexing issue** | Open Source Details for the selected manual’s recorded catalog issue, or expand the manual diagnostics in Scan & Sources. A formatting diagnostic can coexist with useful text; an empty description is not automatically an extraction failure. |
 | **Deep Scan is taking a long time** | Review the current location and counters. Pause to keep results, then resume queued work during the same boot. Deep Scan includes local backup volumes as well as the startup filesystem. |
 | **Resume reports a reboot or clock change** | Start a fresh Standard or Deep Scan. The app refuses to reuse stale inode identities; the existing library remains available. |
 | **A path is inaccessible** | Read its specific permission error. Select an accessible documentation folder or resolve access through normal macOS controls. Scanning does not elevate privileges. |
