@@ -257,6 +257,32 @@ final class CatalogIntegrationTests: XCTestCase {
         }
     }
 
+    func testInstalledAtosPartialFormattingExplainsPDFRefusalAndPreservesDestination() async throws {
+        let source = URL(fileURLWithPath: "/usr/share/man/man1/atos.1")
+        let input = try await manualInput(source: source)
+        let formatted = try await formattedManualText(input: input)
+        XCTAssertTrue(formatted.text.localizedCaseInsensitiveContains("atos"))
+        XCTAssertFalse(formatted.diagnostic.isEmpty, "The installed partial-output control must retain its actual parsing diagnostic.")
+        let html = try await manualHTML(input: input)
+        XCTAssertTrue(html.contains("<aside role=\"note\">"))
+        XCTAssertTrue(html.contains("<pre>" + escapedHTML(formatted.diagnostic) + "</pre>"), formatted.diagnostic)
+
+        let directory = try temporaryDirectory()
+        defer { removeTemporary(directory) }
+        let destination = directory.appendingPathComponent("existing.pdf")
+        try await renderManual(source: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"), destination: destination)
+        let retained = try Data(contentsOf: destination)
+        XCTAssertTrue(try XCTUnwrap(PDFDocument(data: retained)?.string).contains("bootstrap"))
+        do {
+            try await renderManual(source: source, destination: destination)
+            XCTFail("Partial manual output must not replace an existing error-free PDF.")
+        } catch let error as ManualToolError {
+            XCTAssertTrue(error.localizedDescription.hasPrefix("mandoc PDF rendering failed (exit 3):"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("inserting missing end of block"), error.localizedDescription)
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), retained)
+    }
+
     func testManMdocMultilineGzipAndMissingDescription() async throws {
         let directory = try temporaryDirectory()
         defer { removeTemporary(directory) }
