@@ -246,7 +246,9 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
             try seedManual(source: source, description: "", directory: directory)
         }) { application, directory in
             try click(identifier: "result-\(source.path)", application: application)
-            _ = try element(identifier: "readerError", application: application)
+            let readerError = try element(identifier: "readerError", application: application)
+            XCTAssertEqual(readerError.buttons.matching(identifier: "retryManual").count, 1)
+            XCTAssertTrue(try element(identifier: "retryManual", application: application).isEnabled)
             try click(identifier: "manageSources", application: application)
             try click(identifier: "resumeIndexing", application: application)
             let recorded = try waitForRecordedFormatterIssue(directory: directory, source: source)
@@ -260,6 +262,7 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
             try waitForText(source.path, identifier: "manualSourcePath", application: application)
             XCTAssertEqual(try element(identifier: "readerTitle", application: application).label, "sudoers(5)")
             XCTAssertTrue(try element(identifier: "readerError", application: application).exists)
+            XCTAssertTrue(try element(identifier: "retryManual", application: application).isEnabled)
             try attachOwnedWindow(application: application, name: "Source Details with actual recorded formatter issue")
         }
     }

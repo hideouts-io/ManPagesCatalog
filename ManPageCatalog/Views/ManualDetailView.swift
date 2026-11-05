@@ -49,7 +49,7 @@ struct ManualDetailView: View {
                             Text(error).textSelection(.enabled)
                             Button("Retry") { reader.retry() }.accessibilityIdentifier("retryManual")
                         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
-                            .accessibilityIdentifier("readerError")
+                            .accessibilityElement(children: .contain).accessibilityIdentifier("readerError")
                     }
                 }
             } else {
