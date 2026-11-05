@@ -260,7 +260,7 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
             try click(identifier: "sourceDetails", application: application)
             try waitForText(problem, identifier: "manualCatalogIssueText", application: application)
             try waitForText(source.path, identifier: "manualSourcePath", application: application)
-            XCTAssertEqual(try element(identifier: "readerTitle", application: application).label, "sudoers(5)")
+            try waitForText("sudoers(5)", identifier: "readerTitle", application: application)
             XCTAssertTrue(try element(identifier: "readerError", application: application).exists)
             XCTAssertTrue(try element(identifier: "retryManual", application: application).isEnabled)
             try attachOwnedWindow(application: application, name: "Source Details with actual recorded formatter issue")
