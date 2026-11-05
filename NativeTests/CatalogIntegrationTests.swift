@@ -213,39 +213,86 @@ final class CatalogIntegrationTests: XCTestCase {
     }
 
     func testManualProcessPreservesCancellationWhenCaptureCleanupIsDenied() async throws {
+        Self.deniedCleanupStage("test-enter")
         let directory = try temporaryDirectory()
-        defer { removeTemporary(directory) }
+        defer {
+            Self.deniedCleanupStage("fixture-cleanup-enter")
+            removeTemporary(directory)
+            Self.deniedCleanupStage("fixture-cleanup-leave")
+        }
+        Self.deniedCleanupStage("compiler-helper-enter")
         let writer = try await compileManualOutputWriter(directory: directory)
+        Self.deniedCleanupStage("compiler-helper-return")
         let receipt = directory.appendingPathComponent("cleanup-denied")
         let task = Task { try await runManualProcess(executable: writer, arguments: ["0", "0", "60", receipt.path], directory: directory, input: nil) }
+        Self.deniedCleanupStage("writer-readiness-enter")
         let recorded = try await readyManualOutputWriter(task: task, receipt: receipt)
+        Self.deniedCleanupStage("writer-ready")
         addTeardownBlock {
+            Self.deniedCleanupStage("capture-teardown-enter")
+            defer { Self.deniedCleanupStage("capture-teardown-leave") }
             guard FileManager.default.fileExists(atPath: recorded.captureDirectory.path) else { return }
+            Self.deniedCleanupStage("capture-permissions-restore-enter")
             guard chmod(recorded.captureDirectory.path, 0o700) == 0 else {
                 throw ManualToolError(message: "Cannot restore owned capture-directory permissions (POSIX \(errno)).")
             }
+            Self.deniedCleanupStage("capture-permissions-restore-return")
+            Self.deniedCleanupStage("capture-remove-enter")
             try FileManager.default.removeItem(at: recorded.captureDirectory)
+            Self.deniedCleanupStage("capture-remove-return")
         }
+        Self.deniedCleanupStage("cleanup-denial-enter")
         guard chmod(recorded.captureDirectory.path, 0o500) == 0 else {
             let code = errno
+            Self.deniedCleanupStage("failure-cancel-enter")
             task.cancel()
+            Self.deniedCleanupStage("failure-task-drain-enter")
             do { _ = try await task.value }
             catch is CancellationError { }
             throw ManualToolError(message: "Cannot deny owned capture-directory cleanup (POSIX \(code)).")
         }
+        Self.deniedCleanupStage("cleanup-denial-return")
+        Self.deniedCleanupStage("cancel-enter")
         task.cancel()
+        Self.deniedCleanupStage("cancel-return")
+        Self.deniedCleanupStage("task-completion-enter")
         do {
             _ = try await task.value
             XCTFail("Cancellation with denied cleanup returned apparent success.")
         } catch let error as ManualProcessCleanupError {
+            Self.deniedCleanupStage("task-threw-cleanup-error")
             XCTAssertTrue(error.cause is CancellationError)
             XCTAssertTrue(error.failures.contains(where: { $0.contains("Cannot remove capture directory") }), error.localizedDescription)
         }
+        Self.deniedCleanupStage("task-completion-return")
         let present = kill(recorded.processID, 0)
         let code = errno
         XCTAssertEqual(present, -1)
         XCTAssertEqual(code, ESRCH)
         XCTAssertTrue(FileManager.default.fileExists(atPath: recorded.captureDirectory.path))
+        Self.deniedCleanupStage("postconditions-completed")
+    }
+
+    /// Diagnostic-only repeated real cancellation; owned capture teardowns run after this invocation.
+    func testManualProcessDeniedCleanupTwentyDiagnosticInvocations() async throws {
+        for _ in 0..<20 {
+            Self.deniedCleanupStage("repetition-enter")
+            try await testManualProcessPreservesCancellationWhenCaptureCleanupIsDenied()
+            Self.deniedCleanupStage("repetition-body-return")
+        }
+        Self.deniedCleanupStage("all-repetition-bodies-returned")
+    }
+
+    /// Write bounded static stages directly without stdio buffering or the production Process runner.
+    private static func deniedCleanupStage(_ stage: StaticString) {
+        let bytes: [UInt8] = Array(("DENIED-CLEANUP-STAGE " + String(describing: stage) + "\n").utf8)
+        let result: (written: Int, code: Int32) = bytes.withUnsafeBytes { buffer in
+            let written: Int = Darwin.write(STDERR_FILENO, buffer.baseAddress, buffer.count)
+            return (written, written < 0 ? errno : 0)
+        }
+        if result.written != bytes.count {
+            XCTFail("Cannot write the static denied-cleanup stage marker: wrote \(result.written) of \(bytes.count) bytes (POSIX \(result.code)).")
+        }
     }
 
     func testRealInstalledManualDescriptions() async throws {
