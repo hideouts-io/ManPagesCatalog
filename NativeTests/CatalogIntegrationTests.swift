@@ -5,6 +5,11 @@ import Compression
 @testable import Man_Page_Catalog
 
 final class CatalogIntegrationTests: XCTestCase {
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        executionTimeAllowance = 120
+    }
+
     func testNativeXZDecodesInstalledManualAndPreservesIncludePipeline() async throws {
         let directory = try temporaryDirectory()
         defer { removeTemporary(directory) }
