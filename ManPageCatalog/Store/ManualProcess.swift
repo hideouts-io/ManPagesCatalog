@@ -78,12 +78,35 @@ func runManualProcess(executable: URL, arguments: [String], directory: URL, inpu
         try Task.checkCancellation()
         result = ManualProcessResult(bytes: bytes, diagnostic: diagnostic, status: process.terminationStatus)
     } catch {
+        var traceFailures: [String] = manualProcessDiagnosticStage("catch-enter")
+        traceFailures += manualProcessDiagnosticStage("is-running-enter")
         if process.isRunning {
+            traceFailures += manualProcessDiagnosticStage("is-running-true")
             // No shell or worker descendants; kill a cancelled/timed-out formatter before cleanup.
-            kill(process.processIdentifier, SIGKILL)
+            traceFailures += manualProcessDiagnosticStage("pid-read-enter")
+            let childPID: Int32 = process.processIdentifier
+            traceFailures += manualProcessDiagnosticStage("pid-read-return")
+            traceFailures += manualProcessDiagnosticStage("sigkill-enter")
+            let signalStatus: Int32 = kill(childPID, SIGKILL)
+            let signalCode: Int32 = signalStatus < 0 ? errno : 0
+            if signalStatus == 0 {
+                traceFailures += manualProcessDiagnosticStage("sigkill-returned-success")
+            } else if signalCode == ESRCH {
+                traceFailures += manualProcessDiagnosticStage("sigkill-returned-esrch")
+            } else {
+                traceFailures += manualProcessDiagnosticStage("sigkill-returned-error")
+                traceFailures.append("Diagnostic SIGKILL failed (POSIX \(signalCode)).")
+            }
+            traceFailures += manualProcessDiagnosticStage("wait-until-exit-enter")
             process.waitUntilExit()
+            traceFailures += manualProcessDiagnosticStage("wait-until-exit-return")
+        } else {
+            traceFailures += manualProcessDiagnosticStage("is-running-false")
         }
-        let failures = cleanupManualProcessCapture(handles: handles, directory: temporary)
+        traceFailures += manualProcessDiagnosticStage("capture-cleanup-enter")
+        let cleanupFailures = cleanupManualProcessCapture(handles: handles, directory: temporary)
+        traceFailures += manualProcessDiagnosticStage("capture-cleanup-return")
+        let failures = cleanupFailures + traceFailures
         if !failures.isEmpty { throw ManualProcessCleanupError(cause: error, failures: failures) }
         throw error
     }
@@ -117,4 +140,17 @@ private func cleanupManualProcessCapture(handles: [FileHandle], directory: URL) 
     do { try FileManager.default.removeItem(at: directory) }
     catch { failures.append("Cannot remove capture directory \(directory.path): \(error.localizedDescription)") }
     return failures
+}
+
+/// Diagnostic-branch stages use static messages and preserve any trace failure beside the original cause.
+private func manualProcessDiagnosticStage(_ stage: StaticString) -> [String] {
+    let bytes: [UInt8] = Array(("MANUAL-PROCESS-STAGE " + String(describing: stage) + "\n").utf8)
+    let result: (written: Int, code: Int32) = bytes.withUnsafeBytes { buffer in
+        let written: Int = Darwin.write(STDERR_FILENO, buffer.baseAddress, buffer.count)
+        return (written, written < 0 ? errno : 0)
+    }
+    guard result.written == bytes.count else {
+        return ["Cannot write native process diagnostic stage: wrote \(result.written) of \(bytes.count) bytes (POSIX \(result.code))."]
+    }
+    return []
 }
