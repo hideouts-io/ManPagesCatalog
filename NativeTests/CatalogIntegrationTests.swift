@@ -5,6 +5,11 @@ import Compression
 @testable import Man_Page_Catalog
 
 final class CatalogIntegrationTests: XCTestCase {
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        executionTimeAllowance = 120
+    }
+
     func testNativeXZDecodesInstalledManualAndPreservesIncludePipeline() async throws {
         let directory = try temporaryDirectory()
         defer { removeTemporary(directory) }
@@ -210,6 +215,67 @@ final class CatalogIntegrationTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("30-second timeout"), error.localizedDescription)
         }
         try assertManualOutputWriterReleased(receipt: receipt)
+    }
+
+    func testManualProcessLaunchFailurePreservesNativeError() async throws {
+        let directory = try temporaryDirectory()
+        defer { removeTemporary(directory) }
+        let executable = directory.appendingPathComponent("missing-executable")
+        guard !FileManager.default.fileExists(atPath: executable.path) else {
+            throw ManualToolError(message: "The owned missing-executable fixture already exists.")
+        }
+        let native = Process()
+        native.executableURL = executable
+        native.arguments = []
+        native.currentDirectoryURL = directory
+        let expected: NSError?
+        do {
+            try native.run()
+            expected = nil
+        } catch { expected = error as NSError }
+        guard let expected else {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            if native.isRunning {
+                let childPID = native.processIdentifier
+                guard childPID > 0 else {
+                    throw ManualToolError(message: "The missing-executable reference unexpectedly launched with an invalid process identifier.")
+                }
+                if kill(childPID, SIGKILL) != 0 {
+                    let code = errno
+                    guard code == ESRCH else {
+                        throw ManualToolError(message: "Cannot stop the unexpectedly launched native reference (POSIX \(code)).")
+                    }
+                }
+            }
+            while native.isRunning {
+                guard ContinuousClock.now < deadline else {
+                    throw ManualToolError(message: "The unexpectedly launched native reference did not stop within five seconds.")
+                }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTFail("The native reference must refuse the owned nonexistent executable.")
+            return
+        }
+        XCTAssertFalse(native.isRunning)
+        do {
+            _ = try await runManualProcess(executable: executable, arguments: [], directory: directory, input: nil)
+            XCTFail("A nonexistent executable must not return apparent success.")
+        } catch {
+            let actual = error as NSError
+            XCTAssertEqual(actual.domain, expected.domain)
+            XCTAssertEqual(actual.code, expected.code)
+            let actualUnderlying = try underlyingNativeLaunchError(actual)
+            let expectedUnderlying = try underlyingNativeLaunchError(expected)
+            XCTAssertEqual(actualUnderlying?.domain, expectedUnderlying?.domain)
+            XCTAssertEqual(actualUnderlying?.code, expectedUnderlying?.code)
+        }
+    }
+
+    /// Each real invocation retains its cancellation, reaping and denied-cleanup assertions.
+    func testManualProcessRepeatedCancellationPreservesCleanupFailures() async throws {
+        for _ in 0..<20 {
+            try await testManualProcessPreservesCancellationWhenCaptureCleanupIsDenied()
+        }
     }
 
     func testManualProcessPreservesCancellationWhenCaptureCleanupIsDenied() async throws {
@@ -655,6 +721,14 @@ final class CatalogIntegrationTests: XCTestCase {
         do { try await task.value; XCTFail("Cancelled operation must throw") }
         catch is CancellationError { }
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("catalog.json")), before)
+    }
+
+    private func underlyingNativeLaunchError(_ error: NSError) throws -> NSError? {
+        guard error.userInfo[NSUnderlyingErrorKey] != nil else { return nil }
+        guard let underlying = error.userInfo[NSUnderlyingErrorKey] as? Error else {
+            throw ManualToolError(message: "Native process launch error contains an unsupported underlying error value.")
+        }
+        return underlying as NSError
     }
 
     private func compileManualOutputWriter(directory: URL) async throws -> URL {
