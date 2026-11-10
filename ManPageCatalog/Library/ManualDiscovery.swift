@@ -267,6 +267,9 @@ func discoveryIssue(url: URL, error: Error) -> DiscoveryIssue {
     return DiscoveryIssue(path: url.path, kind: kind, reason: error.localizedDescription)
 }
 
+private let manualDiscoveryPrefixLimit: Int = 65_536
+private let nonPhysicalRoffNewlines: CharacterSet = .newlines.subtracting(CharacterSet(charactersIn: "\n"))
+
 /// Read a bounded prefix from an already materialized regular file; never block on a special file.
 func manualPrefix(_ url: URL) throws -> Data {
     let descriptor = open(url.resolvingSymlinksInPath().path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW)
@@ -276,7 +279,7 @@ func manualPrefix(_ url: URL) throws -> Data {
         close(descriptor)
         throw DiscoveryAccessError(kind: .excluded, message: "File changed type or became cloud-only before reading.")
     }
-    var bytes = [UInt8](repeating: 0, count: min(65536, Int(metadata.st_size)))
+    var bytes = [UInt8](repeating: 0, count: min(manualDiscoveryPrefixLimit, Int(metadata.st_size)))
     let count = read(descriptor, &bytes, bytes.count)
     let failure = errno
     guard close(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -296,6 +299,55 @@ func roffHeader(_ data: Data) -> (name: String, section: String)? {
     let declared = fields[0] == ".HS" && text.contains(".de HS") ? tclSections[candidate] ?? candidate : candidate
     let section = declared.range(of: #"^(?:[0-9][A-Za-z0-9]*|[nlpo]|tcl)$"#, options: .regularExpression) != nil ? declared : ""
     return (fields[1], section)
+}
+
+/// A complete probe containing only simple comments can precede a title beyond the probe boundary.
+private func continuedRoffCommentPrologue(_ prefix: Data) -> Bool {
+    guard prefix.count == manualDiscoveryPrefixLimit else { return false }
+    let text = String(decoding: prefix, as: UTF8.self).trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}"))
+    guard text.rangeOfCharacter(from: nonPhysicalRoffNewlines) == nil else { return false }
+    var containsComment = false
+    var commentOnly = true
+    text.enumerateLines { line, stop in
+        if line.trimmingCharacters(in: .whitespaces).isEmpty { return }
+        guard simpleRoffComment(line) else {
+            commentOnly = false
+            stop = true
+            return
+        }
+        containsComment = true
+    }
+    return commentOnly && containsComment
+}
+
+private func simpleRoffComment(_ line: String) -> Bool {
+    (line.hasPrefix(".\\\"") || line.hasPrefix("'\\\"")) && !line.hasSuffix("\\")
+}
+
+/// Newly admitted late-title sources cannot obtain metadata from inactive macro definitions or ignored text.
+private func openingRoffHeader(_ data: Data) -> (name: String, section: String)? {
+    let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}"))
+    guard text.rangeOfCharacter(from: nonPhysicalRoffNewlines) == nil else { return nil }
+    var dateSeen = false
+    var header: (name: String, section: String)?
+    text.enumerateLines { line, stop in
+        if line.trimmingCharacters(in: .whitespaces).isEmpty || simpleRoffComment(line) { return }
+        guard (line.hasPrefix(".") || line.hasPrefix("'")), !line.hasSuffix("\\"), !line.contains("\\#") else {
+            stop = true
+            return
+        }
+        let body = line.dropFirst().drop(while: { $0 == " " || $0 == "\t" })
+        let request = body.prefix(while: { $0 != " " && $0 != "\t" })
+        if request == "Dd", !dateSeen {
+            dateSeen = true
+            return
+        }
+        if request == "Dt" || request == "TH" && !dateSeen {
+            header = roffHeader(Data(("." + body).utf8))
+        }
+        stop = true
+    }
+    return header
 }
 
 func manualFilename(_ file: URL) -> (name: String, section: String)? {
@@ -358,7 +410,9 @@ func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetwo
     }
     let prefixText = String(decoding: prefix, as: UTF8.self)
     let alias = prefixText.range(of: #"(?m)^\.so[ \t]+"#, options: .regularExpression) != nil
-    guard filename != nil || compressed || roffHeader(prefix) != nil || alias else { return nil }
+    let knownCandidate = filename != nil || compressed || roffHeader(prefix) != nil || alias
+    let continuedComments = !knownCandidate && state.size > Int64(prefix.count) && continuedRoffCommentPrologue(prefix)
+    guard knownCandidate || continuedComments else { return nil }
     let input: ManualInput
     let problem: String?
     do {
@@ -384,7 +438,8 @@ func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetwo
             dependencies: [ManualSourceDependency(requested: file, resolved: resolved, digest: manualContentDigest(bytes), parent: nil, line: nil)])
         problem = error.localizedDescription
     }
-    guard let header = roffHeader(input.bytes) else {
+    let parsedHeader = continuedComments ? openingRoffHeader(input.bytes) : roffHeader(input.bytes)
+    guard let header = parsedHeader else {
         throw DiscoveryAccessError(kind: .unsupported, message: "Candidate has no supported .TH or .Dt manual header. Preformatted cat pages and non-manual files are not indexed.")
     }
     let metadata = filename ?? (name: header.name.lowercased(), section: header.section)

@@ -146,6 +146,8 @@ A failed or cancelled scan preserves usable catalog entries and partial discover
 
 Discovery validates roff/man/mdoc and Tcl/Tk `.HS` headers instead of accepting filenames alone. It recognizes numbered and extended sections, locale directories, file symlinks, gzip, Unix compress (`.Z`), bzip2, single-stream XZ, whole-file `.so` aliases and eligible unconditional literal `.so` includes with compressed targets. This includes the installed `zshall` aggregate. Recognized container signatures take priority over misleading extensions.
 
+Nonstandard filenames can also be discovered when a complete 64 KiB probe contains only simple LF-delimited roff comments and blank lines before a later `.TH` or `.Dt` title. This path uses the same validated, bounded source and include acquisition. The opening title may follow a single `.Dd`; inactive definitions, conditionals, changed controls, continued date/title lines and non-LF separators cannot establish metadata through this path. A `.so` target must still satisfy the existing include policy.
+
 Resolved content is fingerprinted with SHA-256 and grouped by section and language. Identical content retains its encountered file locations and searchable aliases; different content remains a separate result. Directory identity prevents repeated traversal and symlink loops. An encountered alternate directory path has a typed coverage reference to the first opened path and its actual coverage root, displayed under **Measured coverage** and retained in exported JSON. That canonical record's pending work and gaps still apply to the alias. Descendant manual paths are not invented or counted twice. Older records without root ownership remain explicit; a fresh scan establishes that provenance and reconciles retargeted aliases.
 
 Each newly discovered file location also retains its scan restrictions and ordered source dependencies. Reading, history, indexing and PDF export reacquire the chosen location and verify both its content and dependency identity. Included-file changes require a fresh scan. Saved inventories and checkpoints cannot grant network access: current folder selections authorize new reads, and removing a selection revokes in-flight acquisition. Unchanged selections keep their original resolved targets when another folder is added or removed. Retained search text and history are historical snapshots, not renewed permission to read a source. Older inventories without this metadata carry no historical scan boundary or saved network grant; current selections still govern network reads. Malformed present provenance fails explicitly.
@@ -156,7 +158,7 @@ Current input boundaries include:
 
 - preformatted cat pages, `.mso`, conditional or macro-generated includes, ambiguous embedded-include markup, and additional compression such as LZMA-alone, Zstandard, LZ4, and lzip;
 - manuals inside archives and files on unmounted volumes;
-- nonstandard filenames whose supported manual header is absent from the first 64 KiB;
+- nonstandard filenames whose supported title is absent from the first 64 KiB and is not preceded by the simple comment prologue described above;
 - source inputs and formatter output exceeding 64 MiB.
 
 Recognized unsupported candidates receive a notice. A validated manual with unsupported embedded includes can remain searchable by name with an explicit issue, but its unverified included text is not indexed. Some formats can therefore remain discoverable without being readable or exportable. The prioritized work for these gaps lives in [TODO.md](TODO.md).
