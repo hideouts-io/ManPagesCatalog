@@ -1,6 +1,8 @@
 import XCTest
 import WebKit
 import PDFKit
+import SwiftUI
+import Combine
 @testable import Man_Page_Catalog
 
 final class NativeBrowserIntegrationTests: XCTestCase {
@@ -475,6 +477,132 @@ final class NativeBrowserIntegrationTests: XCTestCase {
         let source = root.appendingPathComponent("man\(section)/\(name).\(section)")
         let page = try await discoveredManual(file: source, root: root, state: materializedFileState(source), allowedNetworkRoots: [], exclusions: [])
         return try XCTUnwrap(page, "The installed manual must have a verified content identity")
+    }
+
+    @MainActor
+    func testRecordedCatalogIssueReflectsLateIndexingAndPreservesSelectedSource() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CatalogIssue-\(UUID().uuidString)").resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let suite = "CatalogIssue.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
+            do { try await fixture.remove() }
+            catch { XCTFail("Cannot clean owned catalog-issue integration files: \(error)") }
+        }
+        let first = directory.appendingPathComponent("a/man5")
+        let second = directory.appendingPathComponent("b/man5")
+        let clean = directory.appendingPathComponent("clean/man1")
+        for section in [first, second, clean] {
+            try FileManager.default.createDirectory(at: section, withIntermediateDirectories: true)
+        }
+        let sourceA = first.appendingPathComponent("sudoers.5")
+        let sourceB = second.appendingPathComponent("sudoers.5")
+        for source in [sourceA, sourceB] {
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man5/sudoers.5"), to: source)
+        }
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"),
+                                        to: clean.appendingPathComponent("launchctl.1"))
+        let scan = try await scanLibrary(roots: [first, second, clean])
+        XCTAssertEqual(scan.pages.count, 2)
+        let grouped = try XCTUnwrap(scan.pages.first { $0.name == "sudoers" })
+        XCTAssertEqual(grouped.source, sourceA)
+        XCTAssertEqual(Set(grouped.locations.map(\.source)), Set([sourceA, sourceB]))
+        XCTAssertTrue(scan.pages.allSatisfy { !$0.indexed && $0.problem == nil })
+        let output = directory.appendingPathComponent("library")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        try JSONEncoder().encode(scan).write(to: output.appendingPathComponent("discovery-v1.json"), options: .atomic)
+        let selected = grouped.at(try XCTUnwrap(grouped.locations.first { $0.source == sourceB }))
+        try await verifyRecordedCatalogIssue(directory: output, defaults: defaults, fixture: fixture,
+                                             scan: scan, selected: selected)
+    }
+
+    @MainActor
+    private func verifyRecordedCatalogIssue(directory: URL, defaults: UserDefaults, fixture: LibraryFixtureCleanup,
+                                            scan: LibraryScan, selected: ManualPage) async throws {
+        let sourceA = try XCTUnwrap(scan.pages.first { $0.id == selected.id }).source
+        let sourceB = selected.source
+        let cleanPage = try XCTUnwrap(scan.pages.first { $0.name == "launchctl" })
+        let library = LibraryStore(directory: directory, defaults: defaults)
+        fixture.track(library)
+        library.openLibrary()
+        let openDeadline = ProcessInfo.processInfo.systemUptime + 10
+        while library.pages.count != scan.pages.count && ProcessInfo.processInfo.systemUptime < openDeadline {
+            if let error = library.errorMessage { throw ManualToolError(message: error) }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(Set(library.pages.map(\.id)), Set(scan.pages.map(\.id)))
+        XCTAssertFalse(library.isIndexing)
+        let reader = ManualReader(authority: library.sourceAuthority)
+        await reader.open(page: selected, context: BrowseContext(query: "sudoers", section: "5", root: nil, fullText: false))
+        let readerDeadline = ProcessInfo.processInfo.systemUptime + 10
+        while reader.loading && ProcessInfo.processInfo.systemUptime < readerDeadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(reader.loading)
+        let readerError = try XCTUnwrap(reader.errorMessage)
+        XCTAssertTrue(readerError.contains("exit 4"), readerError)
+        XCTAssertEqual(reader.page?.source, sourceB)
+        XCTAssertNil(reader.page?.problem)
+        var loadingTransitions: [Bool] = []
+        let loadingObservation = reader.$loading.dropFirst().sink { loadingTransitions.append($0) }
+        defer { loadingObservation.cancel() }
+        let host = NSHostingView(rootView: ManualCatalogIssueView(manualID: selected.id).environmentObject(library))
+        let windowIdentifier = "manualCatalogIssueTestWindow"
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 420),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.setAccessibilityIdentifier(windowIdentifier)
+        window.contentView = host
+        window.orderBack(nil)
+        defer {
+            reader.webView.stopLoading()
+            window.contentView = nil
+            window.close()
+        }
+        host.layoutSubtreeIfNeeded()
+        try await waitForAccessibilityWindow(windowIdentifier: windowIdentifier,
+                                             deadline: ProcessInfo.processInfo.systemUptime + 1)
+        XCTAssertFalse(try accessibilityIdentifiers(windowIdentifier: windowIdentifier).contains("manualCatalogIssue"))
+        library.continueIndexing()
+        let indexingDeadline = ProcessInfo.processInfo.systemUptime + 15
+        while library.isIndexing && ProcessInfo.processInfo.systemUptime < indexingDeadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(library.isIndexing)
+        XCTAssertNil(library.errorMessage)
+        let indexedGroup = try XCTUnwrap(library.problemPages.first { $0.id == selected.id })
+        let problem = try XCTUnwrap(indexedGroup.problem)
+        XCTAssertFalse(indexedGroup.indexed, "Unsupported formatter output must not become verified full text")
+        XCTAssertTrue(problem.contains(sourceA.path), problem)
+        XCTAssertTrue(problem.contains("exit 4"), problem)
+        let renderDeadline = ProcessInfo.processInfo.systemUptime + 5
+        var displayedProblem: String?
+        while ProcessInfo.processInfo.systemUptime < renderDeadline {
+            host.layoutSubtreeIfNeeded()
+            if try accessibilityIdentifiers(windowIdentifier: windowIdentifier).contains("manualCatalogIssueText") {
+                displayedProblem = try accessibilityTextValue(windowIdentifier: windowIdentifier, controlIdentifier: "manualCatalogIssueText")
+                if displayedProblem == problem { break }
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(displayedProblem, problem)
+        XCTAssertEqual(reader.page?.source, sourceB)
+        XCTAssertNil(reader.page?.problem, "The mounted view must read current catalog metadata rather than this historical reader snapshot")
+        XCTAssertEqual(reader.errorMessage, readerError)
+        XCTAssertTrue(loadingTransitions.isEmpty, "Publishing catalog diagnostics must not reload the selected reader")
+        XCTAssertNil(library.pages.first { $0.id == cleanPage.id }?.problem)
+        host.rootView = ManualCatalogIssueView(manualID: cleanPage.id).environmentObject(library)
+        let cleanDeadline = ProcessInfo.processInfo.systemUptime + 5
+        while try accessibilityIdentifiers(windowIdentifier: windowIdentifier).contains("manualCatalogIssue") &&
+            ProcessInfo.processInfo.systemUptime < cleanDeadline {
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let cleanIdentifiers = try accessibilityIdentifiers(windowIdentifier: windowIdentifier)
+        XCTAssertFalse(cleanIdentifiers.contains("manualCatalogIssue"))
+        XCTAssertFalse(cleanIdentifiers.contains("manualCatalogIssueText"))
     }
 
     @MainActor
