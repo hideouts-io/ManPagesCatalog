@@ -10,16 +10,19 @@ final class CatalogGenerator: ObservableObject {
     @Published private(set) var progress: CatalogProgress?
     private var task: Task<Void, Never>?
 
-    func generate(output: URL, store: CatalogStore) {
+    func generate(output: URL, store: CatalogStore, authority: ManualSourceAuthority) {
         guard !isRunning else { return }
+        let access = authority.snapshot()
         begin(status: "Discovering and rendering manuals…")
         task = Task {
             do {
                 let environment = ProcessInfo.processInfo.environment
                 let roots = try await manualRoots(environment: environment)
-                try await generateCatalog(directory: output, roots: roots, environment: environment) { progress in
-                    await self.update(progress: progress)
+                try authority.requireCurrent(access)
+                try await generateCatalog(directory: output, roots: roots, environment: environment, authority: authority) { progress in
+                    await self.update(progress: progress, access: access, authority: authority)
                 }
+                try authority.requireCurrent(access)
                 finish(output: output, store: store)
             } catch is CancellationError {
                 cancelled()
@@ -29,14 +32,16 @@ final class CatalogGenerator: ObservableObject {
         }
     }
 
-    func refresh(output: URL, store: CatalogStore) {
+    func refresh(output: URL, store: CatalogStore, authority: ManualSourceAuthority) {
         guard !isRunning else { return }
+        let access = authority.snapshot()
         begin(status: "Refreshing descriptions; PDFs stay unchanged…")
         task = Task {
             do {
-                try await refreshCatalogMetadata(directory: output, environment: ProcessInfo.processInfo.environment) { progress in
-                    await self.update(progress: progress)
+                try await refreshCatalogMetadata(directory: output, environment: ProcessInfo.processInfo.environment, authority: authority) { progress in
+                    await self.update(progress: progress, access: access, authority: authority)
                 }
+                try authority.requireCurrent(access)
                 finish(output: output, store: store)
             } catch is CancellationError {
                 cancelled()
@@ -58,7 +63,10 @@ final class CatalogGenerator: ObservableObject {
         isRunning = true
     }
 
-    private func update(progress: CatalogProgress) { self.progress = progress }
+    private func update(progress: CatalogProgress, access: ManualSourceAccess, authority: ManualSourceAuthority) {
+        guard authority.snapshot().generation == access.generation else { return }
+        self.progress = progress
+    }
 
     private func finish(output: URL, store: CatalogStore) {
         isRunning = false
@@ -68,7 +76,7 @@ final class CatalogGenerator: ObservableObject {
 
     private func cancelled() {
         isRunning = false
-        status = "Stopped. Existing catalog metadata is unchanged; completed PDFs can be reused."
+        status = "Stopped. Existing catalog metadata is unchanged; completed PDFs remain in the output folder."
     }
 
     private func failed(error: Error) {

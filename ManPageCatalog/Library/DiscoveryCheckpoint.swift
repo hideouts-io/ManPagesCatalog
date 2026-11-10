@@ -88,9 +88,43 @@ func continuousDiscoveryBootReference() throws -> Date {
 }
 
 func newDiscoveryCheckpoint(plan: DiscoveryPlan, title: String) throws -> DiscoveryCheckpoint {
-    DiscoveryCheckpoint(version: 2, title: title, started: Date(), bootReference: try continuousDiscoveryBootReference(), bootReferenceClock: .continuous, plan: plan, updated: Date(), roots: plan.roots.map {
+    _ = try discoveryExcludedPaths(plan: plan)
+    return DiscoveryCheckpoint(version: 2, title: title, started: Date(), bootReference: try continuousDiscoveryBootReference(), bootReferenceClock: .continuous, plan: plan, updated: Date(), roots: plan.roots.map {
         DiscoveryRootState(root: $0, pending: [$0], directoriesInProgress: [], directories: 0, files: 0, manuals: 0, issues: [])
     }, visited: [:], visitedRootIndices: [:], pages: [], peakPending: plan.roots.count)
+}
+
+extension DiscoveryPlan {
+    /// Preserve legacy absent restrictions while replacing only the runtime network grant.
+    fileprivate init(restricting plan: DiscoveryPlan, allowedNetworkRoots: [URL]) {
+        roots = plan.roots
+        self.allowedNetworkRoots = allowedNetworkRoots
+        exclusions = plan.exclusions
+        traversalExclusions = plan.traversalExclusions
+        traversalRoots = plan.traversalRoots
+        excludedMountedVolumes = plan.excludedMountedVolumes
+    }
+}
+
+/// A saved selection can restrict current consent, but cannot authorize any additional subtree.
+func reauthorizedDiscoveryCheckpoint(_ checkpoint: DiscoveryCheckpoint, access: ManualSourceAccess) throws -> DiscoveryCheckpoint {
+    try access.check()
+    let intersections = checkpoint.plan.allowedNetworkRoots.flatMap { saved in
+        let restriction = saved.standardizedFileURL
+        return access.allowedNetworkRoots.compactMap { current -> URL? in
+            let authorized = current.standardizedFileURL
+            if pathContains(root: restriction.path, path: authorized.path) { return authorized }
+            if pathContains(root: authorized.path, path: restriction.path) { return restriction }
+            return nil
+        }
+    }
+    var seen: Set<String> = []
+    let restricted = intersections.filter { seen.insert($0.path).inserted }
+    let plan = DiscoveryPlan(restricting: checkpoint.plan, allowedNetworkRoots: restricted)
+    return DiscoveryCheckpoint(version: checkpoint.version, title: checkpoint.title, started: checkpoint.started,
+        bootReference: checkpoint.bootReference, bootReferenceClock: checkpoint.bootReferenceClock, plan: plan,
+        updated: checkpoint.updated, roots: checkpoint.roots, visited: checkpoint.visited,
+        visitedRootIndices: checkpoint.visitedRootIndices, pages: checkpoint.pages, peakPending: checkpoint.peakPending)
 }
 
 /// The request identity serializes checkpoint/inventory writes and rejects superseded workers.
@@ -156,6 +190,8 @@ actor DiscoveryCheckpointFile {
             guard saved.version == 2, saved.roots.map(\.root) == saved.plan.roots,
                   saved.plan.roots.allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") }),
                   saved.plan.allowedNetworkRoots.allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") }),
+                  saved.plan.traversalRoots.map({ $0 == saved.plan.roots && !$0.isEmpty }) ?? true,
+                  (saved.plan.excludedMountedVolumes ?? []).allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") && !$0.path.contains("\0") }),
                   saved.plan.exclusions.allSatisfy({ $0.path.hasPrefix("/") && !$0.path.contains("\0") && !$0.reason.isEmpty && $0.kind != .pending && $0.directoryReference == nil }),
                   (saved.plan.traversalExclusions ?? []).allSatisfy({ $0.path.hasPrefix("/") && !$0.path.contains("\0") && !$0.reason.isEmpty && $0.kind == .excluded && $0.directoryReference == nil }),
                   saved.peakPending.map({ $0 >= saved.pendingCount }) ?? false,
@@ -166,6 +202,7 @@ actor DiscoveryCheckpointFile {
                   }) else { throw ManualToolError(message: "Checkpoint has invalid roots, counters, or version.") }
             try validateDiscoveryCursors(saved)
             try validateManualPages(saved.pages)
+            _ = try discoveryExcludedPaths(plan: saved.plan)
             return saved
         } catch {
             throw ManualToolError(message: "Cannot resume \(url.path): \(error.localizedDescription) Start a fresh scan to replace this checkpoint. Your existing library is retained.")

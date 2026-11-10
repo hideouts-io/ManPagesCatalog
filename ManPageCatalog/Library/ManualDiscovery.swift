@@ -51,32 +51,208 @@ func requireDiscoveryVolume(url: URL, allowedNetworkRoots: [URL]) throws {
 }
 
 func requireResolvedDiscoveryVolume(url: URL, allowedNetworkRoots: [URL]) throws {
-    if allowedNetworkRoots.contains(where: { pathContains(root: $0.resolvingSymlinksInPath().path, path: url.path) }) { return }
+    if allowedNetworkRoots.contains(where: { pathContains(root: $0.standardizedFileURL.path, path: url.path) }) { return }
     let values = try url.resourceValues(forKeys: [.volumeIsLocalKey])
     guard values.volumeIsLocal == true else {
         throw DiscoveryAccessError(kind: .excluded, message: "Network or unidentified volume; select this folder explicitly to authorize scanning it.")
     }
 }
 
+/// The kernel mount table permits consent checks even for nonexistent include candidates.
+/// No existence probe or manual-content read is needed on an unselected network filesystem.
+func requireManualCandidateVolume(url: URL, allowedNetworkRoots: [URL]) throws {
+    let resolved = url.standardizedFileURL
+    if allowedNetworkRoots.contains(where: { pathContains(root: $0.standardizedFileURL.path, path: resolved.path) }) { return }
+    var mounted: UnsafeMutablePointer<statfs>?
+    let count = getmntinfo_r_np(&mounted, MNT_NOWAIT)
+    guard count > 0, let mounted else { throw ManualToolError(message: "Cannot inspect the kernel mount table before accessing a manual candidate.") }
+    defer { free(mounted) }
+    var containing: (length: Int, local: Bool)?
+    for index in 0..<Int(count) {
+        let metadata = mounted[index]
+        let path = try discoveryMountPath(metadata)
+        if pathContains(root: path, path: resolved.path), path.count > (containing?.length ?? -1) {
+            containing = (path.count, metadata.f_flags & UInt32(MNT_LOCAL) != 0)
+        }
+    }
+    guard containing?.local == true else {
+        throw DiscoveryAccessError(kind: .excluded, message: "Network or unidentified manual candidate; select its folder explicitly before opening or scanning it.")
+    }
+}
+
+func manualSourceScope(exclusions: [DiscoveryExcludedPath], traversalRoots: [DiscoveryTraversalRoot]?) -> ManualSourceScope {
+    ManualSourceScope(traversalRoots: traversalRoots?.map { URL(fileURLWithPath: $0.path) },
+        resolvedTraversalRoots: traversalRoots?.map { URL(fileURLWithPath: $0.resolvedPath) },
+        traversalExclusions: exclusions.map(\.issue),
+        resolvedTraversalExclusions: exclusions.map { URL(fileURLWithPath: $0.resolvedPath) },
+        excludedMountedVolumes: Array(Set(exclusions.filter { $0.filesystemIdentity != nil }.map { URL(fileURLWithPath: $0.issue.path) })).sorted { $0.path < $1.path })
+}
+
+struct DiscoveryFilesystemIdentity: Equatable, Sendable {
+    let firstComponent: Int32
+    let secondComponent: Int32
+}
+
 struct DiscoveryExcludedPath: Sendable {
     let issue: DiscoveryIssue
     let resolvedPath: String
-}
+    let filesystemIdentity: DiscoveryFilesystemIdentity?
 
-func discoveryExcludedPaths(plan: DiscoveryPlan) -> [DiscoveryExcludedPath] {
-    (plan.traversalExclusions ?? []).map {
-        DiscoveryExcludedPath(issue: $0, resolvedPath: URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path)
+    init(issue: DiscoveryIssue, resolvedPath: String) {
+        self.init(issue: issue, resolvedPath: resolvedPath, filesystemIdentity: nil)
+    }
+
+    init(issue: DiscoveryIssue, resolvedPath: String, filesystemIdentity: DiscoveryFilesystemIdentity?) {
+        self.issue = issue
+        self.resolvedPath = resolvedPath
+        self.filesystemIdentity = filesystemIdentity
     }
 }
 
-/// Match both names of an excluded subtree before inspecting entries or following directory streams.
-func requireDiscoveryScope(url: URL, allowedNetworkRoots: [URL], exclusions: [DiscoveryExcludedPath]) throws {
-    let resolved = url.resolvingSymlinksInPath()
+struct DiscoveryTraversalRoot: Sendable {
+    let path: String
+    let resolvedPath: String
+}
+
+func discoveryTraversalRoots(plan: DiscoveryPlan) -> [DiscoveryTraversalRoot]? {
+    plan.traversalRoots?.map { DiscoveryTraversalRoot(path: $0.path, resolvedPath: $0.resolvingSymlinksInPath().path) }
+}
+
+func discoveryExcludedPaths(plan: DiscoveryPlan) throws -> [DiscoveryExcludedPath] {
+    let paths = (plan.traversalExclusions ?? []).map {
+        DiscoveryExcludedPath(issue: $0, resolvedPath: URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path)
+    }
+    return paths + (try discoveryExcludedMountedPaths(volumes: plan.excludedMountedVolumes ?? []))
+}
+
+/// Validate the mount itself; a missing or unmounted root must never inherit its parent's identity.
+func discoveryExcludedMountedPaths(volumes: [URL]) throws -> [DiscoveryExcludedPath] {
+    guard !volumes.isEmpty else { return [] }
+    let normalized = try volumes.map { volume -> URL in
+        guard volume.isFileURL, volume.path.hasPrefix("/"), !volume.path.contains("\0"),
+              volume.host == nil || volume.host == "" || volume.host == "localhost" else {
+            throw ManualToolError(message: "An excluded mounted volume must be an absolute local file URL.")
+        }
+        return volume.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    guard Set(normalized.map(\.path)).count == normalized.count else {
+        throw ManualToolError(message: "Each excluded mounted volume must be supplied only once.")
+    }
+    for volume in normalized {
+        guard volume.path != "/", !normalized.contains(where: { $0 != volume && pathContains(root: $0.path, path: volume.path) }) else {
+            throw ManualToolError(message: "Cannot exclude \(volume.path): the startup root or a separately excluded parent mount already covers it.")
+        }
+        let descriptor = open(volume.path, O_EVTONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            let code = errno
+            throw ManualToolError(message: "Cannot inspect excluded mounted volume \(volume.path): \(String(cString: strerror(code))) (errno \(code)). Its mount must be present and accessible before this scope can run.")
+        }
+        var metadata = statfs()
+        let inspected = fstatfs(descriptor, &metadata)
+        let inspectionCode = errno
+        let closed = close(descriptor)
+        let closeCode = errno
+        var failures: [String] = []
+        if inspected != 0 { failures.append("Cannot inspect excluded mounted volume \(volume.path): \(String(cString: strerror(inspectionCode))) (errno \(inspectionCode)).") }
+        if closed != 0 { failures.append("Cannot close excluded-volume metadata descriptor for \(volume.path): \(String(cString: strerror(closeCode))) (errno \(closeCode)).") }
+        guard failures.isEmpty else { throw ManualToolError(message: failures.joined(separator: " ")) }
+        guard try discoveryMountPath(metadata) == volume.path, metadata.f_flags & UInt32(MNT_LOCAL) != 0 else {
+            throw ManualToolError(message: "Cannot exclude \(volume.path): it is not a mounted local-volume root. Its mount must be present before this scope can run.")
+        }
+    }
+    var mounted: UnsafeMutablePointer<statfs>?
+    let count = getmntinfo_r_np(&mounted, MNT_NOWAIT)
+    guard count > 0, let mounted else {
+        let code = errno
+        throw ManualToolError(message: "Cannot list mounted filesystems for physical discovery exclusions: \(String(cString: strerror(code))) (errno \(code)).")
+    }
+    defer { free(mounted) }
+    var result: [DiscoveryExcludedPath] = []
+    var foundRoots = Set<String>()
+    for index in 0..<Int(count) {
+        let metadata = mounted[index]
+        let path = try discoveryMountPath(metadata)
+        if normalized.contains(where: { $0.path == path }) { foundRoots.insert(path) }
+        if let excluded = normalized.first(where: { pathContains(root: $0.path, path: path) }) {
+            result.append(DiscoveryExcludedPath(issue: DiscoveryIssue(path: excluded.path, kind: .excluded,
+                reason: "Explicitly excluded mounted volume and its nested mounts from this scoped measurement."),
+                resolvedPath: excluded.path, filesystemIdentity: discoveryFilesystemIdentity(metadata)))
+        }
+    }
+    guard foundRoots.count == normalized.count else {
+        throw ManualToolError(message: "An excluded mounted volume disappeared while its filesystem scope was being validated. Restore the mount or start a fresh scan; retained files were not changed.")
+    }
+    return result
+}
+
+private func discoveryMountPath(_ metadata: statfs) throws -> String {
+    let path = withUnsafeBytes(of: metadata.f_mntonname) { bytes -> String? in
+        guard let end = bytes.firstIndex(of: 0) else { return nil }
+        return String(bytes: bytes[..<end], encoding: .utf8)
+    }
+    guard let path, path.hasPrefix("/"), !path.isEmpty else {
+        throw ManualToolError(message: "The kernel returned an invalid mount path while validating physical discovery exclusions.")
+    }
+    return path
+}
+
+private func discoveryFilesystemIdentity(_ metadata: statfs) -> DiscoveryFilesystemIdentity {
+    DiscoveryFilesystemIdentity(firstComponent: metadata.f_fsid.val.0, secondComponent: metadata.f_fsid.val.1)
+}
+
+/// Missing candidates use existing-parent metadata only; this never opens candidate content.
+func discoveryFilesystemIdentity(url: URL) throws -> DiscoveryFilesystemIdentity {
+    var candidate = url.standardizedFileURL
+    while true {
+        var metadata = statfs()
+        if statfs(candidate.path, &metadata) == 0 { return discoveryFilesystemIdentity(metadata) }
+        let code = errno
+        guard code == ENOENT || code == ENOTDIR else {
+            throw DiscoveryAccessError(kind: [EACCES, EPERM].contains(code) ? .inaccessible : .failed,
+                message: "Cannot identify the filesystem for \(url.path): \(String(cString: strerror(code))) (errno \(code)).")
+        }
+        let parent = candidate.deletingLastPathComponent()
+        guard parent.path != candidate.path else {
+            throw DiscoveryAccessError(kind: .failed, message: "Cannot identify an existing filesystem parent for \(url.path).")
+        }
+        candidate = parent
+    }
+}
+
+/// Reject lexical escapes first, then filesystem aliases before manual-content and alias-existence checks.
+func requireDiscoveryPathBoundary(url: URL, exclusions: [DiscoveryExcludedPath],
+                                  traversalRoots: [DiscoveryTraversalRoot]?) throws -> URL {
+    let lexical = url.standardizedFileURL.path
     if let exclusion = exclusions.first(where: {
-        pathContains(root: $0.issue.path, path: url.path) || pathContains(root: $0.resolvedPath, path: resolved.path)
+        pathContains(root: $0.issue.path, path: lexical) || pathContains(root: $0.resolvedPath, path: lexical)
     }) {
         throw DiscoveryAccessError(kind: .excluded, message: "Excluded subtree \(exclusion.issue.path): \(exclusion.issue.reason)")
     }
+    if let traversalRoots, !traversalRoots.contains(where: {
+        pathContains(root: $0.path, path: lexical) || pathContains(root: $0.resolvedPath, path: lexical)
+    }) {
+        throw DiscoveryAccessError(kind: .excluded, message: "Path leaves the selected scan roots; its directory or manual content was not read.")
+    }
+    let resolved = url.resolvingSymlinksInPath()
+    if let exclusion = exclusions.first(where: { pathContains(root: $0.resolvedPath, path: resolved.path) }) {
+        throw DiscoveryAccessError(kind: .excluded, message: "Excluded subtree \(exclusion.issue.path): \(exclusion.issue.reason)")
+    }
+    if let traversalRoots, !traversalRoots.contains(where: { pathContains(root: $0.resolvedPath, path: resolved.path) }) {
+        throw DiscoveryAccessError(kind: .excluded, message: "Path leaves the selected scan roots; its directory or manual content was not read.")
+    }
+    if exclusions.contains(where: { $0.filesystemIdentity != nil }) {
+        let identity = try discoveryFilesystemIdentity(url: resolved)
+        if let exclusion = exclusions.first(where: { $0.filesystemIdentity == identity }) {
+            throw DiscoveryAccessError(kind: .excluded, message: "Excluded filesystem \(exclusion.issue.path): \(exclusion.issue.reason)")
+        }
+    }
+    return resolved
+}
+
+/// Apply saved path and mounted-filesystem boundaries before content reads or directory streams.
+func requireDiscoveryScope(url: URL, allowedNetworkRoots: [URL], exclusions: [DiscoveryExcludedPath],
+                           traversalRoots: [DiscoveryTraversalRoot]?) throws {
+    let resolved = try requireDiscoveryPathBoundary(url: url, exclusions: exclusions, traversalRoots: traversalRoots)
     try requireResolvedDiscoveryVolume(url: resolved, allowedNetworkRoots: allowedNetworkRoots)
 }
 
@@ -91,6 +267,9 @@ func discoveryIssue(url: URL, error: Error) -> DiscoveryIssue {
     return DiscoveryIssue(path: url.path, kind: kind, reason: error.localizedDescription)
 }
 
+private let manualDiscoveryPrefixLimit: Int = 65_536
+private let nonPhysicalRoffNewlines: CharacterSet = .newlines.subtracting(CharacterSet(charactersIn: "\n"))
+
 /// Read a bounded prefix from an already materialized regular file; never block on a special file.
 func manualPrefix(_ url: URL) throws -> Data {
     let descriptor = open(url.resolvingSymlinksInPath().path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW)
@@ -100,7 +279,7 @@ func manualPrefix(_ url: URL) throws -> Data {
         close(descriptor)
         throw DiscoveryAccessError(kind: .excluded, message: "File changed type or became cloud-only before reading.")
     }
-    var bytes = [UInt8](repeating: 0, count: min(65536, Int(metadata.st_size)))
+    var bytes = [UInt8](repeating: 0, count: min(manualDiscoveryPrefixLimit, Int(metadata.st_size)))
     let count = read(descriptor, &bytes, bytes.count)
     let failure = errno
     guard close(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -120,6 +299,55 @@ func roffHeader(_ data: Data) -> (name: String, section: String)? {
     let declared = fields[0] == ".HS" && text.contains(".de HS") ? tclSections[candidate] ?? candidate : candidate
     let section = declared.range(of: #"^(?:[0-9][A-Za-z0-9]*|[nlpo]|tcl)$"#, options: .regularExpression) != nil ? declared : ""
     return (fields[1], section)
+}
+
+/// A complete probe containing only simple comments can precede a title beyond the probe boundary.
+private func continuedRoffCommentPrologue(_ prefix: Data) -> Bool {
+    guard prefix.count == manualDiscoveryPrefixLimit else { return false }
+    let text = String(decoding: prefix, as: UTF8.self).trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}"))
+    guard text.rangeOfCharacter(from: nonPhysicalRoffNewlines) == nil else { return false }
+    var containsComment = false
+    var commentOnly = true
+    text.enumerateLines { line, stop in
+        if line.trimmingCharacters(in: .whitespaces).isEmpty { return }
+        guard simpleRoffComment(line) else {
+            commentOnly = false
+            stop = true
+            return
+        }
+        containsComment = true
+    }
+    return commentOnly && containsComment
+}
+
+private func simpleRoffComment(_ line: String) -> Bool {
+    (line.hasPrefix(".\\\"") || line.hasPrefix("'\\\"")) && !line.hasSuffix("\\")
+}
+
+/// Newly admitted late-title sources cannot obtain metadata from inactive macro definitions or ignored text.
+private func openingRoffHeader(_ data: Data) -> (name: String, section: String)? {
+    let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}"))
+    guard text.rangeOfCharacter(from: nonPhysicalRoffNewlines) == nil else { return nil }
+    var dateSeen = false
+    var header: (name: String, section: String)?
+    text.enumerateLines { line, stop in
+        if line.trimmingCharacters(in: .whitespaces).isEmpty || simpleRoffComment(line) { return }
+        guard (line.hasPrefix(".") || line.hasPrefix("'")), !line.hasSuffix("\\"), !line.contains("\\#") else {
+            stop = true
+            return
+        }
+        let body = line.dropFirst().drop(while: { $0 == " " || $0 == "\t" })
+        let request = body.prefix(while: { $0 != " " && $0 != "\t" })
+        if request == "Dd", !dateSeen {
+            dateSeen = true
+            return
+        }
+        if request == "Dt" || request == "TH" && !dateSeen {
+            header = roffHeader(Data(("." + body).utf8))
+        }
+        stop = true
+    }
+    return header
 }
 
 func manualFilename(_ file: URL) -> (name: String, section: String)? {
@@ -152,7 +380,16 @@ func manualCompression(_ bytes: Data) -> ManualCompression? {
     return signatures.first(where: { bytes.starts(with: $0.1) })?.0
 }
 
-func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetworkRoots: [URL], exclusions: [DiscoveryExcludedPath]) async throws -> ManualPage? {
+func discoveredManual(file: URL, root: URL, state: ManualFileState,
+                      allowedNetworkRoots: [URL], exclusions: [DiscoveryExcludedPath]) async throws -> ManualPage? {
+    try await discoveredManual(file: file, root: root, state: state, allowedNetworkRoots: allowedNetworkRoots,
+                               exclusions: exclusions, traversalRoots: nil)
+}
+
+func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetworkRoots: [URL],
+                      exclusions: [DiscoveryExcludedPath], traversalRoots: [DiscoveryTraversalRoot]?) async throws -> ManualPage? {
+    try requireDiscoveryScope(url: file, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions,
+                              traversalRoots: traversalRoots)
     let filename = autoreleasepool { manualFilename(file) }
     // An empty regular file cannot contain a manual header or compression signature.
     if state.size == 0 {
@@ -163,31 +400,46 @@ func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetwo
     }
     let prefix = try autoreleasepool { try manualPrefix(file) }
     let compression = manualCompression(prefix)
-    let compressed = compression != nil || ["gz", "Z", "bz2"].contains(file.pathExtension)
+    let compressed = compression != nil || ["gz", "Z", "bz2", "xz"].contains(file.pathExtension)
     if compressed && ["tar", "cpio"].contains(file.deletingPathExtension().pathExtension) {
         throw DiscoveryAccessError(kind: .excluded, message: "Archive contents are not traversed. Extract documentation into a selected folder to scan it.")
     }
-    if [.xz, .zstandard, .lz4, .lzip].contains(compression) || ["xz", "lzma", "zst", "lz", "lz4"].contains(file.pathExtension) {
+    let supportedCompression = [.gzip, .compress, .bzip2, .xz].contains(compression)
+    if [.zstandard, .lz4, .lzip].contains(compression) || !supportedCompression && ["lzma", "zst", "lz", "lz4"].contains(file.pathExtension) {
         throw DiscoveryAccessError(kind: .unsupported, message: "Cannot inspect \(compression?.rawValue ?? file.pathExtension) compressed content with the current decoder. It may contain documentation; extract it explicitly and select that folder.")
     }
     let prefixText = String(decoding: prefix, as: UTF8.self)
     let alias = prefixText.range(of: #"(?m)^\.so[ \t]+"#, options: .regularExpression) != nil
-    guard filename != nil || compressed || roffHeader(prefix) != nil || alias else { return nil }
+    let knownCandidate = filename != nil || compressed || roffHeader(prefix) != nil || alias
+    let continuedComments = !knownCandidate && state.size > Int64(prefix.count) && continuedRoffCommentPrologue(prefix)
+    guard knownCandidate || continuedComments else { return nil }
     let input: ManualInput
     let problem: String?
     do {
-        input = try await validatedManualInput(source: file) { target in
-            try requireDiscoveryScope(url: target, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions)
+        input = try await validatedManualInput(source: file, validate: { target in
+            try requireDiscoveryScope(url: target, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions,
+                                      traversalRoots: traversalRoots)
             try requireMaterializedManual(target)
-        }
+        }, validateCandidate: { candidate in
+            try requireManualCandidateVolume(url: candidate, allowedNetworkRoots: allowedNetworkRoots)
+            let resolved = try requireDiscoveryPathBoundary(url: candidate, exclusions: exclusions, traversalRoots: traversalRoots)
+            try requireManualCandidateVolume(url: resolved, allowedNetworkRoots: allowedNetworkRoots)
+        })
         problem = nil
     } catch let error as DiscoveryAccessError where error.kind == .unsupported && roffHeader(prefix) != nil {
         // A validated header establishes discovery even when safe rendering is unsupported.
         // Keep the name searchable and expose the failure; never index unverified included content.
-        input = ManualInput(bytes: try await manualBytes(source: file), directory: file.deletingLastPathComponent(), sourceChain: [file])
+        let resolved = file.resolvingSymlinksInPath()
+        let bytes = try await checkedManualBytes(source: resolved, validate: { target in
+            try requireDiscoveryScope(url: target, allowedNetworkRoots: allowedNetworkRoots, exclusions: exclusions, traversalRoots: traversalRoots)
+            try requireMaterializedManual(target)
+        })
+        input = ManualInput(bytes: bytes, directory: file.deletingLastPathComponent(), sourceChain: [file],
+            dependencies: [ManualSourceDependency(requested: file, resolved: resolved, digest: manualContentDigest(bytes), parent: nil, line: nil)])
         problem = error.localizedDescription
     }
-    guard let header = roffHeader(input.bytes) else {
+    let parsedHeader = continuedComments ? openingRoffHeader(input.bytes) : roffHeader(input.bytes)
+    guard let header = parsedHeader else {
         throw DiscoveryAccessError(kind: .unsupported, message: "Candidate has no supported .TH or .Dt manual header. Preformatted cat pages and non-manual files are not indexed.")
     }
     let metadata = filename ?? (name: header.name.lowercased(), section: header.section)
@@ -201,7 +453,8 @@ func discoveredManual(file: URL, root: URL, state: ManualFileState, allowedNetwo
     // Aliases are re-resolved on every scan: their target can change without changing the alias file.
     let indirect = input.sourceChain.count > 1
     let location = ManualLocation(source: file, root: root, name: metadata.name, section: metadata.section,
-                                  language: language, stamp: (indirect ? "alias:" : "direct:") + state.stamp)
+        language: language, stamp: (indirect ? "alias:" : "direct:") + state.stamp,
+        provenance: ManualSourceProvenance(version: 1, scope: manualSourceScope(exclusions: exclusions, traversalRoots: traversalRoots), dependencies: input.dependencies))
     return ManualPage(name: metadata.name, section: metadata.section, source: file, root: root, fingerprint: digest,
                       language: language, locations: [location], description: "", indexed: false, problem: problem)
 }
@@ -344,7 +597,8 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
                        progress: @Sendable (DiscoveryProgress) async -> Void,
                        save: @Sendable (DiscoveryCheckpoint) async throws -> Void) async throws -> LibraryScan {
     var state = checkpoint
-    let exclusions = discoveryExcludedPaths(plan: state.plan)
+    let exclusions = try discoveryExcludedPaths(plan: state.plan)
+    let traversalRoots = discoveryTraversalRoots(plan: state.plan)
     var cached: [String: ManualPage] = [:]
     for page in previous { for location in page.locations { cached[location.source.path] = page.at(location) } }
     var segmentPeak = state.pendingCount
@@ -357,7 +611,8 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
         do {
             for cursor in state.roots[index].directoriesInProgress {
                 try Task.checkCancellation()
-                try requireDiscoveryScope(url: cursor.directory, allowedNetworkRoots: state.plan.allowedNetworkRoots, exclusions: exclusions)
+                try requireDiscoveryScope(url: cursor.directory, allowedNetworkRoots: state.plan.allowedNetworkRoots,
+                                          exclusions: exclusions, traversalRoots: traversalRoots)
                 let file = try materializedFileState(cursor.directory)
                 let stream = try DiscoveryDirectoryStream(directory: cursor.directory, expectedIdentity: file.identity, allowedNetworkRoots: state.plan.allowedNetworkRoots)
                 try stream.restore(cursor)
@@ -403,7 +658,8 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
                 try Task.checkCancellation()
                 // Foundation path/volume bridges create temporary objects on this long-lived worker.
                 let file = try autoreleasepool {
-                    try requireDiscoveryScope(url: url, allowedNetworkRoots: state.plan.allowedNetworkRoots, exclusions: exclusions)
+                    try requireDiscoveryScope(url: url, allowedNetworkRoots: state.plan.allowedNetworkRoots,
+                                              exclusions: exclusions, traversalRoots: traversalRoots)
                     return try materializedFileState(url)
                 }
                 if file.directory {
@@ -427,12 +683,17 @@ func continueDiscovery(checkpoint: DiscoveryCheckpoint, previous: [ManualPage],
                         inspectedRegular = true
                         let page: ManualPage?
                         if let old = cached[url.path], old.problem == nil || old.indexed,
-                           old.locations.first(where: { $0.source == url })?.stamp == "direct:" + file.stamp {
+                           let oldLocation = old.locations.first(where: { $0.source == url }),
+                           let provenance = oldLocation.provenance, provenance.dependencies.count == 1,
+                           oldLocation.stamp == "direct:" + file.stamp {
                             var reused = old
-                            reused.locations = [ManualLocation(source: url, root: root, name: old.name, section: old.section, language: old.language, stamp: "direct:" + file.stamp)]
+                            reused.locations = [ManualLocation(source: url, root: root, name: oldLocation.name, section: old.section, language: old.language, stamp: "direct:" + file.stamp,
+                                provenance: ManualSourceProvenance(version: 1, scope: manualSourceScope(exclusions: exclusions, traversalRoots: traversalRoots), dependencies: provenance.dependencies))]
                             page = reused.at(reused.locations[0])
                         } else {
-                            page = try await discoveredManual(file: url, root: root, state: file, allowedNetworkRoots: state.plan.allowedNetworkRoots, exclusions: exclusions)
+                            page = try await discoveredManual(file: url, root: root, state: file,
+                                allowedNetworkRoots: state.plan.allowedNetworkRoots, exclusions: exclusions,
+                                traversalRoots: traversalRoots)
                         }
                         if let page {
                             state.pages.append(page)

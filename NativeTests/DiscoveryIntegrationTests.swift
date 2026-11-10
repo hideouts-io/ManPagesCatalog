@@ -6,6 +6,874 @@ import SwiftUI
 @testable import Man_Page_Catalog
 
 final class DiscoveryIntegrationTests: XCTestCase {
+    func testLateCommentProloguesDiscoverNonstandardNamesAndIncludedHeaders() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryLateHeader-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned late-header fixtures: \(error)") }
+        }
+        let original = try Data(contentsOf: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"))
+        let staticSource = try Data(contentsOf: URL(fileURLWithPath: "/usr/share/man/man1/4ccconv.1"))
+        let padding = Data(String(repeating: ".\\\" padding\n", count: 8_192).utf8)
+        XCTAssertGreaterThan(padding.count, 65_536)
+        let extended = padding + original
+        let fixtures: [(name: String, bytes: Data)] = [
+            ("early-header", original),
+            ("late-header", extended),
+            ("late-control.1", extended),
+            ("late-alias", padding + Data(".so early-header\n".utf8)),
+            ("late-spaced-header", padding + Data(". TH 7 1\n.SH NAME\n7 \\- static title spacing witness\n".utf8)),
+            ("included-source", staticSource),
+            ("late-included-header", padding + Data(".so included-source\n.Pp\nOwned late header inclusion marker.\n".utf8))
+        ]
+        for fixture in fixtures { try fixture.bytes.write(to: directory.appendingPathComponent(fixture.name)) }
+        let unsupported = directory.appendingPathComponent("unsupported-included-header")
+        try (padding + Data(".so early-header\n.Pp\nUnconditional inclusion does not permit dynamic markup.\n".utf8)).write(to: unsupported)
+        let scan = try await discoverLibrary(plan: DiscoveryPlan(roots: [directory], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [], traversalRoots: [directory]), previous: [], progress: { _ in })
+        XCTAssertFalse(scan.cancelled)
+        let issues = scan.coverage.flatMap(\.issues)
+        XCTAssertEqual(issues.map(\.path), [unsupported.path])
+        XCTAssertTrue(issues.allSatisfy { $0.kind == .unsupported && $0.reason.contains("unconditional static markup") }, "\(issues)")
+        let locations = scan.pages.flatMap(\.locations)
+        XCTAssertEqual(Set(locations.map { $0.source.lastPathComponent }), Set(fixtures.map { $0.name }))
+        let late = directory.appendingPathComponent("late-header")
+        let page = try XCTUnwrap(scan.pages.first { $0.locations.contains { $0.source == late } })
+        let location = try XCTUnwrap(page.locations.first { $0.source == late })
+        XCTAssertEqual(location.name, "launchctl")
+        XCTAssertEqual(location.section, "1")
+        let provenance = try XCTUnwrap(location.provenance)
+        XCTAssertEqual(provenance.dependencies.map(\.resolved), [late.resolvingSymlinksInPath()])
+        XCTAssertEqual(provenance.dependencies.first?.digest, manualContentDigest(extended))
+        let access = ManualSourceAccess(generation: UUID(), allowedNetworkRoots: [])
+        let input = try await manualInput(page: page.at(location), access: access)
+        XCTAssertEqual(input.bytes, extended)
+        let expected = try await formattedManualText(source: directory.appendingPathComponent("early-header"))
+        let rendered = try await formattedManualText(input: input)
+        XCTAssertTrue(expected.diagnostic.isEmpty)
+        XCTAssertTrue(rendered.diagnostic.isEmpty)
+        XCTAssertEqual(rendered.text, expected.text)
+        let spaced = directory.appendingPathComponent("late-spaced-header")
+        let spacedPage = try XCTUnwrap(scan.pages.first { $0.locations.contains { $0.source == spaced } })
+        let spacedLocation = try XCTUnwrap(spacedPage.locations.first { $0.source == spaced })
+        XCTAssertEqual(spacedLocation.name, "7")
+        XCTAssertEqual(spacedLocation.section, "1")
+        let spacedText = try await formattedManualText(source: spaced)
+        XCTAssertTrue(spacedText.diagnostic.isEmpty)
+        XCTAssertTrue(spacedText.text.contains("static title spacing witness"))
+        let included = directory.appendingPathComponent("late-included-header")
+        let includedPage = try XCTUnwrap(scan.pages.first { $0.locations.contains { $0.source == included } })
+        let includedLocation = try XCTUnwrap(includedPage.locations.first { $0.source == included })
+        XCTAssertEqual(includedLocation.provenance?.dependencies.map { $0.resolved.lastPathComponent },
+                       ["late-included-header", "included-source"])
+        let includedInput = try await manualInput(page: includedPage.at(includedLocation), access: access)
+        let includedText = try await formattedManualText(input: includedInput)
+        XCTAssertTrue(includedText.diagnostic.isEmpty)
+        XCTAssertTrue(includedText.text.contains("Owned late header inclusion marker."))
+    }
+
+    func testInactiveLateHeadersDoNotEstablishNonstandardManuals() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryInactiveHeader-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned inactive-header fixtures: \(error)") }
+        }
+        let padding = Data(String(repeating: ".\\\" padding\n", count: 8_192).utf8)
+        let endings: [(name: String, text: String)] = [
+            ("macro-definition", ".de UNUSED\n.TH FALSE 1\n..\nOrdinary text.\n"),
+            ("ignored-block", ".ig\n.TH FALSE 1\n..\nOrdinary text.\n"),
+            ("conditional-header", ".if 0 .TH FALSE 1\nOrdinary text.\n"),
+            ("continued-date", ".Dd 2026-11-09\\\n.Dt FALSE 1\nOrdinary text.\n"),
+            ("joined-date-comment", ".Dd 2026-11-09\\# ignored\n.Dt FALSE 1\nOrdinary text.\n"),
+            ("unicode-line-comment", ".\\\" ignored\u{2028}.TH FALSE 1\nOrdinary text.\n"),
+            ("unicode-paragraph-comment", ".\\\" ignored\u{2029}.TH FALSE 1\nOrdinary text.\n"),
+            ("unicode-next-line-comment", ".\\\" ignored\u{0085}.TH FALSE 1\nOrdinary text.\n"),
+            ("changed-control", ".cc !\n.TH FALSE 1\nOrdinary text.\n"),
+            ("changed-escape", ".ec @\n.TH FALSE 1\nOrdinary text.\n"),
+            ("late-title-after-text", "Ordinary notes.\n.TH FALSE 1\n"),
+            ("comment-only", ".\\\" .TH FALSE 1\n")
+        ]
+        for ending in endings { try (padding + Data(ending.text.utf8)).write(to: directory.appendingPathComponent(ending.name)) }
+        try Data("Ordinary numbered notes.\n".utf8).write(to: directory.appendingPathComponent("notes.1"))
+        let scan = try await discoverLibrary(plan: DiscoveryPlan(roots: [directory], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [], traversalRoots: [directory]), previous: [], progress: { _ in })
+        XCTAssertFalse(scan.cancelled)
+        XCTAssertTrue(scan.pages.isEmpty, "Inactive or missing title requests must not establish manual metadata.")
+    }
+
+    func testLateCommentAliasesStillRejectTargetsOutsideSelectedRoots() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryLateHeaderScope-\(UUID().uuidString)")
+        let selected = directory.appendingPathComponent("selected")
+        try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned late-header scope fixtures: \(error)") }
+        }
+        let outside = directory.appendingPathComponent("outside.1")
+        let original = try Data(contentsOf: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"))
+        try original.write(to: outside)
+        let padding = Data(String(repeating: ".\\\" padding\n", count: 8_192).utf8)
+        let earlyAlias = selected.appendingPathComponent("early-alias.1")
+        let lateAlias = selected.appendingPathComponent("late-alias")
+        try Data(".so ../outside.1\n".utf8).write(to: earlyAlias)
+        try (padding + Data(".so ../outside.1\n".utf8)).write(to: lateAlias)
+        let scan = try await discoverLibrary(plan: DiscoveryPlan(roots: [selected], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [], traversalRoots: [selected]), previous: [], progress: { _ in })
+        XCTAssertFalse(scan.cancelled)
+        XCTAssertTrue(scan.pages.isEmpty)
+        let issues = scan.coverage.flatMap(\.issues)
+        XCTAssertEqual(Set(issues.map(\.path)), [earlyAlias.path, lateAlias.path])
+        XCTAssertTrue(issues.allSatisfy { $0.kind == .excluded && $0.reason.contains("leaves the selected scan roots") })
+        XCTAssertEqual(try Data(contentsOf: outside), original)
+    }
+
+    func testPresentCoveragePublicationPreservesReplacedDestination() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("prior coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("prepared coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let companionExport = try prepareCoverageExport(destination: companion, bytes: Data("prepared companion".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(companionExport).isEmpty) }
+        let foreign = Data("independent replacement before publication".utf8)
+        try foreign.write(to: destination, options: .atomic)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try publishCoverageExports([export, companionExport])) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_dev, before.st_dev)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), export.replacement.bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: companion.path))
+        XCTAssertEqual(try Data(contentsOf: companionExport.recoveryURL.appendingPathComponent("replacement")), companionExport.replacement.bytes)
+    }
+
+    func testPresentCoveragePublicationPreservesSameInodeEdit() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("prior coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("prepared coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let companionExport = try prepareCoverageExport(destination: companion, bytes: Data("prepared companion".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(companionExport).isEmpty) }
+        let foreign = Data("independent same-inode update before publication".utf8)
+        let writer = try FileHandle(forWritingTo: destination)
+        try writer.write(contentsOf: foreign)
+        try writer.close()
+        var changed = stat()
+        XCTAssertEqual(lstat(destination.path, &changed), 0)
+        XCTAssertEqual(changed.st_ino, before.st_ino)
+        XCTAssertThrowsError(try publishCoverageExports([export, companionExport])) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_dev, before.st_dev)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), export.replacement.bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: companion.path))
+        XCTAssertEqual(try Data(contentsOf: companionExport.recoveryURL.appendingPathComponent("replacement")), companionExport.replacement.bytes)
+    }
+
+    func testAbsentCoveragePublicationPreservesNewDestination() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let replacement = Data("prepared coverage".utf8)
+        let export = try prepareCoverageExport(destination: destination, bytes: replacement)
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        XCTAssertNil(export.original)
+        let foreign = Data("independent writer before publication".utf8)
+        try foreign.write(to: destination, options: .atomic)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try publishCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+            XCTAssertTrue(error.localizedDescription.contains("errno \(EEXIST)"))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_dev, before.st_dev)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent(export.replacement.name)), replacement)
+    }
+
+    func testExchangedSymlinkConflictRestoresTheActualEntry() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("prior coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("prepared coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let companionExport = try prepareCoverageExport(destination: companion, bytes: Data("prepared companion".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(companionExport).isEmpty) }
+        let target = directory.appendingPathComponent("independent-target.json")
+        let foreign = Data("independent symbolic-link target".utf8)
+        try foreign.write(to: target, options: .atomic)
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: target)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try publishCoverageExports([export, companionExport])) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+            XCTAssertTrue(error.localizedDescription.contains("symbolic link"))
+        }
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(after.st_mode & S_IFMT, S_IFLNK)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: destination.path), target.path)
+        XCTAssertEqual(try Data(contentsOf: target), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), export.replacement.bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: companion.path))
+    }
+
+    func testExchangedDirectoryConflictRestoresTheActualEntry() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("prior coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("prepared coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let companionExport = try prepareCoverageExport(destination: companion, bytes: Data("prepared companion".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(companionExport).isEmpty) }
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        let canary = destination.appendingPathComponent("retained.txt")
+        let foreign = Data("independent directory contents".utf8)
+        try foreign.write(to: canary)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try publishCoverageExports([export, companionExport])) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+            XCTAssertTrue(error.localizedDescription.contains("directory"))
+        }
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(after.st_mode & S_IFMT, S_IFDIR)
+        XCTAssertEqual(try Data(contentsOf: canary), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), export.replacement.bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: companion.path))
+    }
+
+    func testRemovedExistingDestinationIsNotRecreated() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("prior coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("prepared coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let companionExport = try prepareCoverageExport(destination: companion, bytes: Data("prepared companion".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(companionExport).isEmpty) }
+        try FileManager.default.removeItem(at: destination)
+        XCTAssertThrowsError(try publishCoverageExports([export, companionExport])) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+            XCTAssertTrue(error.localizedDescription.contains("errno \(ENOENT)"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: companion.path))
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("replacement")), export.replacement.bytes)
+        XCTAssertEqual(try Data(contentsOf: companionExport.recoveryURL.appendingPathComponent("replacement")), companionExport.replacement.bytes)
+    }
+
+    func testChangedDisplacedEntryRefusesCleanupBeforeRemovingBackup() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("prior coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("prepared coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let publication = try publishCoverageExport(export)
+        try validatePublishedCoverageExport(publication)
+        let displaced = export.recoveryURL.appendingPathComponent("replacement")
+        let foreign = Data("independent displaced-slot replacement".utf8)
+        try foreign.write(to: displaced, options: .atomic)
+        var before = stat()
+        XCTAssertEqual(lstat(displaced.path, &before), 0)
+        XCTAssertThrowsError(try removePublishedCoverageExport(publication)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("changed after preparation"))
+        }
+        XCTAssertEqual(try Data(contentsOf: displaced), foreign)
+        var after = stat()
+        XCTAssertEqual(lstat(displaced.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+        XCTAssertEqual(try Data(contentsOf: destination), export.replacement.bytes)
+    }
+
+    func testChangedPrivateBackupRefusesCleanupBeforeRemovingDisplacedEntry() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("prior coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("prepared coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let publication = try publishCoverageExport(export)
+        try validatePublishedCoverageExport(publication)
+        let displaced = export.recoveryURL.appendingPathComponent("replacement")
+        var before = stat()
+        XCTAssertEqual(lstat(displaced.path, &before), 0)
+        let backup = export.recoveryURL.appendingPathComponent("original")
+        let foreign = Data("independent backup-slot replacement".utf8)
+        try foreign.write(to: backup, options: .atomic)
+        XCTAssertThrowsError(try removePublishedCoverageExport(publication)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Private original backup changed"))
+        }
+        XCTAssertEqual(try Data(contentsOf: displaced), original)
+        var after = stat()
+        XCTAssertEqual(lstat(displaced.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(try Data(contentsOf: backup), foreign)
+        XCTAssertEqual(try Data(contentsOf: destination), export.replacement.bytes)
+    }
+
+    func testNewWriterAfterExchangePreservesDisplacedAndOriginalEntries() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("prior coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("prepared coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let displacedBytes = Data("independent replacement before exchange".utf8)
+        try displacedBytes.write(to: destination, options: .atomic)
+        var displacedIdentity = stat()
+        XCTAssertEqual(lstat(destination.path, &displacedIdentity), 0)
+        let publication = try publishCoverageExport(export)
+        XCTAssertThrowsError(try validatePublishedCoverageExport(publication))
+        let newest = Data("newer independent writer after exchange".utf8)
+        try newest.write(to: destination, options: .atomic)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try restorePublishedCoverageExport(publication)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("changed after publication"))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), newest)
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        let displaced = export.recoveryURL.appendingPathComponent("replacement")
+        XCTAssertEqual(try Data(contentsOf: displaced), displacedBytes)
+        var retained = stat()
+        XCTAssertEqual(lstat(displaced.path, &retained), 0)
+        XCTAssertEqual(retained.st_ino, displacedIdentity.st_ino)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+    }
+
+    func testSecondExchangeValidationFailureRestoresBothActualEntries() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let coverage = directory.appendingPathComponent("coverage.json")
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let originalCoverage = Data("prior coverage".utf8)
+        let originalCompanion = Data("prior companion".utf8)
+        try originalCoverage.write(to: coverage, options: .atomic)
+        try originalCompanion.write(to: companion, options: .atomic)
+        var coverageBefore = stat()
+        XCTAssertEqual(lstat(coverage.path, &coverageBefore), 0)
+        let exports = [try prepareCoverageExport(destination: coverage, bytes: Data("prepared coverage".utf8)),
+                       try prepareCoverageExport(destination: companion, bytes: Data("prepared companion".utf8))]
+        defer { for export in exports { XCTAssertTrue(closeCoverageExport(export).isEmpty) } }
+        let foreign = Data("independent companion before publication".utf8)
+        try foreign.write(to: companion, options: .atomic)
+        var companionBefore = stat()
+        XCTAssertEqual(lstat(companion.path, &companionBefore), 0)
+        XCTAssertThrowsError(try publishCoverageExports(exports)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(companion.path))
+            XCTAssertTrue(error.localizedDescription.contains("changed after preparation"))
+        }
+        XCTAssertEqual(try Data(contentsOf: coverage), originalCoverage)
+        XCTAssertEqual(try Data(contentsOf: companion), foreign)
+        var coverageAfter = stat()
+        var companionAfter = stat()
+        XCTAssertEqual(lstat(coverage.path, &coverageAfter), 0)
+        XCTAssertEqual(lstat(companion.path, &companionAfter), 0)
+        XCTAssertEqual(coverageAfter.st_ino, coverageBefore.st_ino)
+        XCTAssertEqual(companionAfter.st_ino, companionBefore.st_ino)
+        XCTAssertEqual(try Data(contentsOf: exports[0].recoveryURL.appendingPathComponent("original")), originalCoverage)
+        XCTAssertEqual(try Data(contentsOf: exports[1].recoveryURL.appendingPathComponent("original")), originalCompanion)
+        for export in exports {
+            XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), export.replacement.bytes)
+        }
+    }
+
+    func testUnreadableDisplacedEntryIsRestoredWithoutReadingIt() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("prior coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("prepared coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let companionExport = try prepareCoverageExport(destination: companion, bytes: Data("prepared companion".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(companionExport).isEmpty) }
+        let foreign = Data("independent unreadable displaced entry".utf8)
+        try foreign.write(to: destination, options: .atomic)
+        guard chmod(destination.path, 0) == 0 else {
+            throw ManualToolError(message: "Cannot deny owned displaced fixture reads: errno \(errno).")
+        }
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try publishCoverageExports([export, companionExport])) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+            XCTAssertTrue(error.localizedDescription.contains("errno \(EACCES)"))
+        }
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(after.st_mode & 0o777, 0)
+        guard chmod(destination.path, 0o600) == 0 else {
+            throw ManualToolError(message: "Cannot restore owned displaced fixture reads: errno \(errno).")
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), export.replacement.bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: companion.path))
+    }
+
+    func testOversizedDisplacedEntryIsRestoredWithoutLoadingItsBody() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("prior coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("prepared coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let companionExport = try prepareCoverageExport(destination: companion, bytes: Data("prepared companion".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(companionExport).isEmpty) }
+        let canary = Data("independent oversized entry".utf8)
+        try canary.write(to: destination, options: .atomic)
+        let oversized: UInt64 = 64 * 1024 * 1024 + 1
+        let writer = try FileHandle(forWritingTo: destination)
+        try writer.truncate(atOffset: oversized)
+        try writer.close()
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertEqual(before.st_size, Int64(oversized))
+        XCTAssertThrowsError(try publishCoverageExports([export, companionExport])) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+            XCTAssertTrue(error.localizedDescription.contains("backup limit"))
+        }
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(after.st_size, before.st_size)
+        let reader = try FileHandle(forReadingFrom: destination)
+        let prefix = try XCTUnwrap(try reader.read(upToCount: canary.count))
+        try reader.close()
+        XCTAssertEqual(prefix, canary)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), export.replacement.bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: companion.path))
+    }
+
+    func testAbsentCoveragePublicationPreservesNewSymbolicLink() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let replacement = Data("prepared coverage".utf8)
+        let export = try prepareCoverageExport(destination: destination, bytes: replacement)
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        XCTAssertNil(export.original)
+        let target = directory.appendingPathComponent("independent-target.json")
+        let foreign = Data("independent symbolic-link target".utf8)
+        try foreign.write(to: target, options: .atomic)
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: target)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try publishCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+            XCTAssertTrue(error.localizedDescription.contains("errno \(EEXIST)"))
+        }
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_dev, before.st_dev)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(after.st_mode & S_IFMT, S_IFLNK)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: destination.path), target.path)
+        XCTAssertEqual(try Data(contentsOf: target), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent(export.replacement.name)), replacement)
+    }
+
+    func testFailedAtomicCompanionPreservesForeignReplacement() throws {
+        try verifyFailedAtomicDestinationPreservation(previous: Data("previous companion".utf8))
+    }
+
+    func testFailedAtomicCompanionPreservesNewFile() throws {
+        try verifyFailedAtomicDestinationPreservation(previous: nil)
+    }
+
+    private func verifyFailedAtomicDestinationPreservation(previous: Data?) throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let coverage = directory.appendingPathComponent("coverage.json")
+        let companion = directory.appendingPathComponent("coverage.performance.json")
+        let originalCoverage = Data("previous coverage".utf8)
+        let newCoverage = Data("new coverage".utf8)
+        try originalCoverage.write(to: coverage, options: .atomic)
+        if let previous { try previous.write(to: companion, options: .atomic) }
+        let exports = [try prepareCoverageExport(destination: coverage, bytes: newCoverage),
+                       try prepareCoverageExport(destination: companion, bytes: Data("new companion".utf8))]
+        defer { for export in exports { XCTAssertTrue(closeCoverageExport(export).isEmpty) } }
+        let publishedCoverage = try publishCoverageExport(exports[0])
+        try denyExportDirectoryWrites(directory)
+        var writeFailure: Error?
+        do { _ = try publishCoverageExport(exports[1]) }
+        catch { writeFailure = error }
+        let failure = try XCTUnwrap(writeFailure, "The actual atomic companion publication must fail before recovery.")
+        guard chmod(directory.path, 0o700) == 0 else {
+            throw ManualToolError(message: "Cannot restore owned fixture write access: errno \(errno).")
+        }
+        let foreign = Data("independent writer after failed companion write".utf8)
+        try foreign.write(to: companion, options: .atomic)
+        var foreignIdentity = stat()
+        XCTAssertEqual(lstat(companion.path, &foreignIdentity), 0)
+        XCTAssertThrowsError(try restoreCoverageExport(exports: exports, failedIndex: 1, publications: [publishedCoverage], writeFailure: failure)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(companion.path))
+            XCTAssertTrue(error.localizedDescription.contains("changed independently"))
+            XCTAssertTrue(error.localizedDescription.contains(failure.localizedDescription))
+        }
+        XCTAssertEqual(try Data(contentsOf: companion), foreign)
+        var retainedIdentity = stat()
+        XCTAssertEqual(lstat(companion.path, &retainedIdentity), 0)
+        XCTAssertEqual(retainedIdentity.st_ino, foreignIdentity.st_ino)
+        XCTAssertEqual(try Data(contentsOf: coverage), originalCoverage)
+    }
+
+    func testOwnedExportRestoresPreviousBytes() throws {
+        try verifyOwnedExportRestoration(original: Data("previous coverage".utf8))
+    }
+
+    func testOwnedExportRestoresPreviousAbsence() throws {
+        try verifyOwnedExportRestoration(original: nil)
+    }
+
+    private func verifyOwnedExportRestoration(original: Data?) throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        if let original { try original.write(to: destination, options: .atomic) }
+        let replacement = Data("published coverage".utf8)
+        let export = try prepareCoverageExport(destination: destination, bytes: replacement)
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        var recoveryMetadata = stat()
+        XCTAssertEqual(lstat(export.recoveryURL.path, &recoveryMetadata), 0)
+        XCTAssertEqual(recoveryMetadata.st_mode & 0o777, 0o700)
+        let publication = try publishCoverageExport(export)
+        let outcome = try restorePublishedCoverageExport(publication)
+        XCTAssertTrue(outcome.contains(destination.path))
+        if let original { XCTAssertEqual(try Data(contentsOf: destination), original) }
+        else { XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path)) }
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), replacement)
+    }
+
+    func testPublishedExportPreservesIndependentReplacementAndOriginalBackup() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("previous coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("new coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let publication = try publishCoverageExport(export)
+        let foreign = Data("independent successful-destination writer".utf8)
+        try foreign.write(to: destination, options: .atomic)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try restorePublishedCoverageExport(publication)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("changed after publication"))
+            XCTAssertTrue(error.localizedDescription.contains(export.recoveryURL.path))
+        }
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+    }
+
+    func testPublishedExportPreservesInPlaceWriterAndOriginalBackup() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("previous coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("new coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let publication = try publishCoverageExport(export)
+        let foreign = Data("changed data".utf8)
+        let writer = try FileHandle(forWritingTo: destination)
+        try writer.write(contentsOf: foreign)
+        try writer.close()
+        var current = stat()
+        XCTAssertEqual(lstat(destination.path, &current), 0)
+        XCTAssertEqual(current.st_ino, export.replacement.identity.inode)
+        XCTAssertThrowsError(try restorePublishedCoverageExport(publication)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("changed after publication"))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+    }
+
+    func testDeniedRestorationRetainsPublishedAndPriorBytes() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("previous coverage".utf8)
+        let replacement = Data("new coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: replacement)
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let publication = try publishCoverageExport(export)
+        try denyExportDirectoryWrites(directory)
+        XCTAssertThrowsError(try restorePublishedCoverageExport(publication)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("capture published output"))
+            XCTAssertTrue(error.localizedDescription.contains(export.recoveryURL.path))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), replacement)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+    }
+
+    func testExclusiveOriginalRestorationPreservesNewerPathAndCapturedBytes() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("previous coverage".utf8)
+        let replacement = Data("new coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: replacement)
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let publication = try publishCoverageExport(export)
+        try capturePublishedCoverageExport(export)
+        let foreign = Data("writer after capture".utf8)
+        try foreign.write(to: destination, options: .atomic)
+        XCTAssertThrowsError(try restoreCapturedCoverageExport(publication)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("errno 17"))
+            XCTAssertTrue(error.localizedDescription.contains(export.recoveryURL.path))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), replacement)
+    }
+
+    func testForeignCaptureReturnsWithoutOverwritingNewerPath() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let original = Data("previous coverage".utf8)
+        try original.write(to: destination, options: .atomic)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("new coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let publication = try publishCoverageExport(export)
+        let capturedForeign = Data("foreign before capture".utf8)
+        try capturedForeign.write(to: destination, options: .atomic)
+        try capturePublishedCoverageExport(export)
+        let newest = Data("newer independent writer".utf8)
+        try newest.write(to: destination, options: .atomic)
+        XCTAssertThrowsError(try restoreCapturedCoverageExport(publication)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("changed during capture"))
+            XCTAssertTrue(error.localizedDescription.contains("errno 17"))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), newest)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("captured")), capturedForeign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent("original")), original)
+    }
+
+    func testForeignSymlinkCaptureReturnsWithoutFollowingTarget() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let target = directory.appendingPathComponent("untouched.txt")
+        let targetBytes = Data("foreign symlink target".utf8)
+        try targetBytes.write(to: target)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("new coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let publication = try publishCoverageExport(export)
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: target)
+        try capturePublishedCoverageExport(export)
+        XCTAssertThrowsError(try restoreCapturedCoverageExport(publication)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Captured entry returned"))
+        }
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: destination.path), target.path)
+        XCTAssertEqual(try Data(contentsOf: target), targetBytes)
+    }
+
+    func testPreparedPairRefusesRecreatedParentBeforePublication() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let parent = directory.appendingPathComponent("exports")
+        let relocated = directory.appendingPathComponent("relocated-exports")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        let coverage = parent.appendingPathComponent("coverage.json")
+        let previousCoverage = Data("prior coverage in original directory".utf8)
+        try previousCoverage.write(to: coverage)
+        let first = try prepareCoverageExport(destination: coverage, bytes: Data("new coverage".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(first).isEmpty) }
+        try FileManager.default.moveItem(at: parent, to: relocated)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        let companion = parent.appendingPathComponent("coverage.performance.json")
+        let previousCompanion = Data("prior companion in replacement directory".utf8)
+        try previousCompanion.write(to: companion)
+        let second = try prepareCoverageExport(destination: companion, bytes: Data("new companion".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(second).isEmpty) }
+        XCTAssertThrowsError(try validateCoverageExportParents([first, second])) { error in
+            XCTAssertTrue(error.localizedDescription.contains("different directory identities"))
+            XCTAssertTrue(error.localizedDescription.contains("Neither output file was changed"))
+        }
+        XCTAssertEqual(try Data(contentsOf: relocated.appendingPathComponent("coverage.json")), previousCoverage)
+        XCTAssertEqual(try Data(contentsOf: companion), previousCompanion)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: coverage.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: relocated.appendingPathComponent("coverage.performance.json").path))
+        let retainedFirst = relocated.appendingPathComponent(first.recoveryURL.lastPathComponent)
+        XCTAssertEqual(try Data(contentsOf: retainedFirst.appendingPathComponent("replacement")), first.replacement.bytes)
+        XCTAssertEqual(try Data(contentsOf: second.recoveryURL.appendingPathComponent("replacement")), second.replacement.bytes)
+    }
+
+    func testRecoveryDirectorySubstitutionRefusesCleanupBeforeRemovingBackup() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let previous = Data("prior output".utf8)
+        try previous.write(to: destination)
+        let export = try prepareCoverageExport(destination: destination, bytes: Data("published output".utf8))
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        let publication = try publishCoverageExport(export)
+        let retained = directory.appendingPathComponent("relocated-recovery")
+        try FileManager.default.moveItem(at: export.recoveryURL, to: retained)
+        try FileManager.default.createDirectory(at: export.recoveryURL, withIntermediateDirectories: false)
+        var replacement = stat()
+        XCTAssertEqual(lstat(export.recoveryURL.path, &replacement), 0)
+        XCTAssertThrowsError(try removePublishedCoverageExport(publication)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Recovery directory pathname changed identity"))
+        }
+        XCTAssertEqual(try Data(contentsOf: retained.appendingPathComponent("original")), previous)
+        XCTAssertEqual(try Data(contentsOf: destination), export.replacement.bytes)
+        var unchanged = stat()
+        XCTAssertEqual(lstat(export.recoveryURL.path, &unchanged), 0)
+        XCTAssertEqual(unchanged.st_ino, replacement.st_ino)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: export.recoveryURL.path).isEmpty)
+    }
+
+    func testInvalidCoverageDestinationsPreserveExistingPathBeforePreparation() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let retained = Data("existing destination must remain untouched".utf8)
+        try retained.write(to: destination)
+        let nulURL = try XCTUnwrap(URL(string: destination.absoluteString + "%00-suffix"))
+        XCTAssertTrue(nulURL.path(percentEncoded: false).contains("\0"))
+        let nonfileURL = try XCTUnwrap(URL(string: "https://example.invalid/coverage.json"))
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        for invalid in [nulURL, nonfileURL, URL(fileURLWithPath: "/")] {
+            XCTAssertThrowsError(try prepareCoverageExport(destination: invalid, bytes: Data("replacement".utf8))) { error in
+                XCTAssertTrue(error.localizedDescription.contains("nonempty filename and no NUL"))
+                XCTAssertFalse(error.localizedDescription.contains("\0"))
+            }
+        }
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(try Data(contentsOf: destination), retained)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["coverage.json"])
+    }
+
+    private func exportRecoveryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ExportRecovery-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        guard chmod(directory.path, 0o700) == 0 else { throw ManualToolError(message: "Cannot protect owned export fixture: errno \(errno).") }
+        return directory
+    }
+
+    private func denyExportDirectoryWrites(_ directory: URL) throws {
+        guard geteuid() != 0, chmod(directory.path, 0o555) == 0 else {
+            throw ManualToolError(message: "Export integration requires a non-root identity and owned directory mode0555 (errno \(errno)).")
+        }
+        XCTAssertNotEqual(access(directory.path, W_OK), 0)
+    }
+
+    private func removeExportRecoveryDirectory(_ directory: URL) {
+        if chmod(directory.path, 0o700) != 0 { XCTFail("Cannot restore owned export fixture permissions: errno \(errno).") }
+        do { try FileManager.default.removeItem(at: directory) }
+        catch { XCTFail("Cannot remove owned export fixture: \(error)") }
+    }
+
+    func testNativeXZDiscoveryUsesMagicAndRecordsCurrentProvenance() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryXZ-\(UUID().uuidString)")
+        let section = directory.appendingPathComponent("man1")
+        try FileManager.default.createDirectory(at: section, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned XZ discovery files: \(error)") }
+        }
+        let original = try Data(contentsOf: URL(fileURLWithPath: "/usr/share/man/man1/zshroadmap.1"))
+        let compressed = try encodedXZTestData(bytes: original)
+        let names = ["reference.1.xz", "renamed-xz", "misleading.1.gz", "misleading.1.lzma", "misleading.1.zst"]
+        for name in names { try compressed.write(to: section.appendingPathComponent(name)) }
+        let alias = section.appendingPathComponent("alias.1")
+        try ".so man1/reference.1\n".write(to: alias, atomically: true, encoding: .utf8)
+        let mismatched = section.appendingPathComponent("mismatched.1.xz")
+        try original.write(to: mismatched)
+        let corrupt = section.appendingPathComponent("corrupt.1.xz")
+        var corruptBytes = compressed
+        corruptBytes[corruptBytes.count - 12] ^= 1
+        try corruptBytes.write(to: corrupt)
+        let scan = try await discoverLibrary(plan: DiscoveryPlan(roots: [directory], allowedNetworkRoots: [], exclusions: []),
+            previous: [], progress: { _ in })
+        XCTAssertFalse(scan.cancelled)
+        let locations = scan.pages.flatMap(\.locations)
+        XCTAssertEqual(Set(locations.map { $0.source.lastPathComponent }), Set(names + ["alias.1"]))
+        let issues = scan.coverage.flatMap(\.issues)
+        XCTAssertEqual(Set(issues.map(\.path)), [mismatched.path, corrupt.path])
+        XCTAssertTrue(issues.allSatisfy { $0.reason.contains("XZ") }, "\(issues)")
+        let page = try XCTUnwrap(scan.pages.first { $0.locations.contains { $0.source == alias } })
+        let location = try XCTUnwrap(page.locations.first { $0.source == alias })
+        let provenance = try XCTUnwrap(location.provenance)
+        XCTAssertEqual(provenance.dependencies.map { $0.resolved.lastPathComponent }, ["alias.1", "reference.1.xz"])
+        XCTAssertEqual(provenance.dependencies.last?.digest, manualContentDigest(original))
+        let access = ManualSourceAccess(generation: UUID(), allowedNetworkRoots: [])
+        let input = try await manualInput(page: page.at(location), access: access)
+        XCTAssertEqual(input.bytes, original)
+        let changed = original + Data("\n.\\\" Changed owned XZ dependency\n".utf8)
+        try encodedXZTestData(bytes: changed).write(to: section.appendingPathComponent("reference.1.xz"))
+        do {
+            _ = try await manualInput(page: page.at(location), access: access)
+            XCTFail("Changing a compressed dependency must invalidate discovered source provenance.")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("changed after discovery"), error.localizedDescription) }
+    }
+
     func testRecursiveRealManualsAliasesVersionsAndCoverage() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Discovery-\(UUID().uuidString)")
         let nested = directory.appendingPathComponent(".hidden/Tool.app/Contents/Resources/fr/man1")
@@ -522,8 +1390,7 @@ final class DiscoveryIntegrationTests: XCTestCase {
         XCTAssertEqual(lstat(deniedCompanion.path, &beforeCompanion), 0)
         XCTAssertThrowsError(try store.exportCoverage(to: deniedCoverage)) { error in
             XCTAssertTrue(error.localizedDescription.contains(deniedCoverage.path))
-            XCTAssertTrue(error.localizedDescription.contains("retains its previous bytes or absence"))
-            XCTAssertTrue(error.localizedDescription.contains("Not written: \(deniedCompanion.path)"))
+            XCTAssertTrue(error.localizedDescription.contains("Neither output file was changed"))
             XCTAssertFalse(error.localizedDescription.contains("Restoration failed"))
         }
         XCTAssertEqual(try Data(contentsOf: deniedCoverage), coverageBytes)
@@ -1028,6 +1895,335 @@ final class DiscoveryIntegrationTests: XCTestCase {
         let reopened = DiscoveryCheckpointFile(url: checkpointURL)
         let loaded = try await reopened.load()
         return (partial, try XCTUnwrap(loaded))
+    }
+
+    func testInitialManualSourceRespectsCandidateBoundaryAndExistingDiscoveryEntryPoint() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("InitialManualBoundary-\(UUID().uuidString)")
+        let allowed = directory.appendingPathComponent("allowed")
+        try FileManager.default.createDirectory(at: allowed, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned initial-source fixture: \(error)") }
+        }
+        let installed = URL(fileURLWithPath: "/usr/share/man/man1/ls.1")
+        let outside = directory.appendingPathComponent("outside.1")
+        try FileManager.default.copyItem(at: installed, to: outside)
+        let roots = [DiscoveryTraversalRoot(path: allowed.path, resolvedPath: allowed.resolvingSymlinksInPath().path)]
+        do {
+            _ = try await validatedManualInput(source: outside, validate: { target in try requireMaterializedManual(target) },
+                validateCandidate: { candidate in
+                    _ = try requireDiscoveryPathBoundary(url: candidate, exclusions: [], traversalRoots: roots)
+                })
+            XCTFail("The candidate boundary must reject the initial source before reading its contents")
+        } catch let error as DiscoveryAccessError {
+            XCTAssertEqual(error.kind, .excluded)
+            XCTAssertTrue(error.localizedDescription.contains("Path leaves the selected scan roots"))
+        }
+        guard geteuid() != 0, chmod(outside.path, 0) == 0, access(outside.path, R_OK) != 0 else {
+            throw ManualToolError(message: "Cannot deny reads on the owned outside-root source fixture.")
+        }
+        let unreadable = try materializedFileState(outside)
+        do {
+            _ = try await discoveredManual(file: outside, root: allowed, state: unreadable,
+                allowedNetworkRoots: [], exclusions: [], traversalRoots: roots)
+            XCTFail("Direct discovery must reject an outside source before attempting its unreadable prefix")
+        } catch let error as DiscoveryAccessError {
+            XCTAssertEqual(error.kind, .excluded)
+            XCTAssertTrue(error.localizedDescription.contains("Path leaves the selected scan roots"))
+        }
+        guard chmod(outside.path, 0o600) == 0 else {
+            throw ManualToolError(message: "Cannot restore owned outside-source fixture permissions.")
+        }
+        let inside = allowed.appendingPathComponent("ls.1")
+        try FileManager.default.copyItem(at: installed, to: inside)
+        let state = try materializedFileState(inside)
+        let discovered = try await discoveredManual(file: inside, root: allowed, state: state,
+            allowedNetworkRoots: [], exclusions: [])
+        let bounded = try await discoveredManual(file: inside, root: allowed, state: state,
+            allowedNetworkRoots: [], exclusions: [], traversalRoots: roots)
+        let existing = try XCTUnwrap(discovered)
+        let confined = try XCTUnwrap(bounded)
+        XCTAssertEqual(existing.name, "ls")
+        XCTAssertNil(existing.problem)
+        XCTAssertEqual(existing.id, confined.id)
+        let alias = directory.appendingPathComponent("selected-root-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: allowed)
+        let aliasSource = alias.appendingPathComponent("ls.1")
+        let aliasRoots = [DiscoveryTraversalRoot(path: alias.path, resolvedPath: allowed.resolvingSymlinksInPath().path)]
+        let aliased = try await discoveredManual(file: aliasSource, root: alias, state: materializedFileState(aliasSource),
+            allowedNetworkRoots: [], exclusions: [], traversalRoots: aliasRoots)
+        let aliasPage = try XCTUnwrap(aliased)
+        XCTAssertEqual(aliasPage.id, existing.id)
+        XCTAssertNil(aliasPage.problem)
+    }
+
+    func testPhysicalMountedExclusionRejectsDataFirmlinkAndMissingCandidates() async throws {
+        let data = URL(fileURLWithPath: "/System/Volumes/Data")
+        let users = URL(fileURLWithPath: "/Users")
+        let dataUsers = data.appendingPathComponent("Users")
+        let system = URL(fileURLWithPath: "/")
+        let dataIdentity = try discoveryFilesystemIdentity(url: data)
+        XCTAssertEqual(try discoveryFilesystemIdentity(url: users), dataIdentity)
+        XCTAssertEqual(try discoveryFilesystemIdentity(url: dataUsers), dataIdentity)
+        XCTAssertNotEqual(try discoveryFilesystemIdentity(url: system), dataIdentity)
+        var usersMetadata = stat()
+        var dataUsersMetadata = stat()
+        guard stat(users.path, &usersMetadata) == 0, stat(dataUsers.path, &dataUsersMetadata) == 0 else {
+            throw ManualToolError(message: "Cannot inspect Data/Users firmlink metadata for the owned boundary integration (errno \(errno)).")
+        }
+        XCTAssertEqual(usersMetadata.st_dev, dataUsersMetadata.st_dev)
+        XCTAssertEqual(usersMetadata.st_ino, dataUsersMetadata.st_ino)
+        let plan = DiscoveryPlan(roots: [system], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [], traversalRoots: nil, excludedMountedVolumes: [data])
+        let exclusions = try discoveryExcludedPaths(plan: plan)
+        XCTAssertFalse(exclusions.isEmpty)
+        XCTAssertNoThrow(try requireDiscoveryPathBoundary(url: system, exclusions: exclusions, traversalRoots: nil))
+        let missing = users.appendingPathComponent("ManPagesCatalog-owned-missing-\(UUID().uuidString)").appendingPathComponent("missing.1")
+        for candidate in [users, missing] {
+            XCTAssertThrowsError(try requireDiscoveryPathBoundary(url: candidate, exclusions: exclusions, traversalRoots: nil)) { error in
+                guard let access = error as? DiscoveryAccessError else { return XCTFail("Expected a classified excluded filesystem: \(error)") }
+                XCTAssertEqual(access.kind, .excluded)
+                XCTAssertTrue(access.message.contains("Explicitly excluded mounted volume"), access.message)
+            }
+        }
+        do {
+            _ = try await validatedManualInput(source: missing, validate: { try requireMaterializedManual($0) },
+                validateCandidate: { _ = try requireDiscoveryPathBoundary(url: $0, exclusions: exclusions, traversalRoots: nil) })
+            XCTFail("A missing Data-firmlink candidate must be excluded before the alias existence check.")
+        } catch let error as DiscoveryAccessError {
+            XCTAssertEqual(error.kind, .excluded)
+            XCTAssertTrue(error.message.contains("Explicitly excluded mounted volume"), error.message)
+        } catch { XCTFail("The missing Data-firmlink candidate reached its existence check: \(error)") }
+        let legacy = DiscoveryPlan(roots: [system], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [DiscoveryIssue(path: data.path, kind: .excluded, reason: "Legacy path-only scope")])
+        let decoded = try JSONDecoder().decode(DiscoveryPlan.self, from: JSONEncoder().encode(legacy))
+        XCTAssertNil(decoded.excludedMountedVolumes)
+        XCTAssertNoThrow(try requireDiscoveryPathBoundary(url: users, exclusions: discoveryExcludedPaths(plan: decoded), traversalRoots: nil),
+            "An absent physical-policy field retains the earlier path-only scope.")
+    }
+
+    func testMissingOrUnmountedExcludedVolumeRefusesResumeWithoutChangingBytes() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ExcludedMountResume-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned mount-policy checkpoint fixture: \(error)") }
+        }
+        let nonmount = directory.appendingPathComponent("ordinary-directory")
+        try FileManager.default.createDirectory(at: nonmount, withIntermediateDirectories: false)
+        let marker = directory.appendingPathComponent("retained-marker")
+        let markerBytes = Data("owned mount-policy preservation marker\n".utf8)
+        try markerBytes.write(to: marker)
+        let legacy = try newDiscoveryCheckpoint(plan: DiscoveryPlan(roots: [directory], allowedNetworkRoots: [], exclusions: []), title: "Owned mount-policy fixture")
+        let remote = try XCTUnwrap(URL(string: "file://example.invalid/System/Volumes/Data"))
+        for excluded in [nonmount, directory.appendingPathComponent("missing-mounted-root"), remote] {
+            let plan = DiscoveryPlan(roots: legacy.plan.roots, allowedNetworkRoots: [], exclusions: [],
+                traversalExclusions: [], traversalRoots: nil, excludedMountedVolumes: [excluded])
+            XCTAssertThrowsError(try newDiscoveryCheckpoint(plan: plan, title: "Invalid excluded mount"))
+            let invalid = DiscoveryCheckpoint(version: legacy.version, title: legacy.title, started: legacy.started,
+                bootReference: legacy.bootReference, bootReferenceClock: legacy.bootReferenceClock, plan: plan, updated: legacy.updated,
+                roots: legacy.roots, visited: legacy.visited, visitedRootIndices: legacy.visitedRootIndices,
+                pages: legacy.pages, peakPending: legacy.peakPending)
+            let checkpoint = directory.appendingPathComponent("checkpoint.json")
+            let bytes = try JSONEncoder().encode(invalid)
+            try bytes.write(to: checkpoint)
+            do {
+                _ = try await DiscoveryCheckpointFile(url: checkpoint).load()
+                XCTFail("A missing mount or an ordinary directory must not inherit its parent's excluded filesystem identity.")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("mount"), error.localizedDescription)
+            }
+            XCTAssertEqual(try Data(contentsOf: checkpoint), bytes)
+            XCTAssertEqual(try Data(contentsOf: marker), markerBytes)
+        }
+    }
+
+    func testEmbeddedIncludeProvenanceSurvivesInventoryAndInvalidatesChangedContent() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("IncludeProvenance-\(UUID().uuidString)")
+        let root = directory.appendingPathComponent("manuals")
+        let section = root.appendingPathComponent("man1")
+        try FileManager.default.createDirectory(at: section, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned include-provenance files: \(error)") }
+        }
+        let source = section.appendingPathComponent("aggregate.1")
+        let child = section.appendingPathComponent("body.1")
+        try ".TH AGGREGATE 1\n.SH NAME\naggregate \\- provenance integration\n.SH DESCRIPTION\n.so man1/body.1\n"
+            .write(to: source, atomically: true, encoding: .utf8)
+        try "Original include content marker.\n".write(to: child, atomically: true, encoding: .utf8)
+        let excluded = root.appendingPathComponent("private")
+        try FileManager.default.createDirectory(at: excluded, withIntermediateDirectories: false)
+        let plan = DiscoveryPlan(roots: [root], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [DiscoveryIssue(path: excluded.path, kind: .excluded, reason: "Owned excluded include subtree")],
+            traversalRoots: [root])
+        let scan = try await discoverLibrary(plan: plan, previous: [], progress: { _ in })
+        let page = try XCTUnwrap(scan.pages.first { $0.source == source })
+        XCTAssertNil(page.problem)
+        let location = try XCTUnwrap(page.locations.first)
+        let provenance = try XCTUnwrap(location.provenance)
+        XCTAssertEqual(provenance.version, 1)
+        XCTAssertEqual(provenance.scope.traversalRoots?.map(\.path), [root.path])
+        XCTAssertEqual(provenance.scope.traversalExclusions.map(\.path), [excluded.path])
+        XCTAssertEqual(provenance.dependencies.map(\.resolved), [source, child].map { $0.resolvingSymlinksInPath() })
+        XCTAssertEqual(provenance.dependencies.map(\.parent), [nil, 0])
+        let inventory = directory.appendingPathComponent("inventory.json")
+        try JSONEncoder().encode(scan).write(to: inventory, options: .atomic)
+        let restored = try loadDiscovery(inventory)
+        let restoredPage = try XCTUnwrap(restored.pages.first { $0.source == source })
+        XCTAssertEqual(restoredPage.locations, page.locations)
+        let access = ManualSourceAccess(generation: UUID(), allowedNetworkRoots: [])
+        let opened = try await manualInput(page: restoredPage, access: access)
+        XCTAssertEqual(opened.dependencies, provenance.dependencies)
+        let originalSource = try Data(contentsOf: source)
+        try "Changed include content marker.\n".write(to: child, atomically: true, encoding: .utf8)
+        do {
+            _ = try await manualInput(page: restoredPage, access: access)
+            XCTFail("Reading an old inventory must not associate changed include bytes with its old fingerprint.")
+        } catch { XCTAssertTrue(error.localizedDescription.localizedCaseInsensitiveContains("scan"), error.localizedDescription) }
+        let changed = try await discoverLibrary(plan: plan, previous: restored.pages, progress: { _ in })
+        let changedPage = try XCTUnwrap(changed.pages.first { $0.source == source })
+        XCTAssertNotEqual(changedPage.fingerprint, page.fingerprint)
+        let changedInput = try await manualInput(page: changedPage, access: access)
+        XCTAssertTrue(String(decoding: changedInput.bytes, as: UTF8.self).contains("Changed include content marker."))
+        XCTAssertEqual(try Data(contentsOf: source), originalSource, "Only the included file changed.")
+    }
+
+    func testNewHigherPriorityIncludeWithIdenticalContentRequiresFreshProvenance() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("IncludePriority-\(UUID().uuidString)")
+        let section = directory.appendingPathComponent("man1")
+        try FileManager.default.createDirectory(at: section, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned include-priority files: \(error)") }
+        }
+        let source = section.appendingPathComponent("aggregate.1")
+        let body = Data("Equal include bytes with distinct source provenance.\n".utf8)
+        try ".TH AGGREGATE 1\n.SH NAME\naggregate \\- candidate order integration\n.SH DESCRIPTION\n.so piece.1\n"
+            .write(to: source, atomically: true, encoding: .utf8)
+        try body.write(to: section.appendingPathComponent("piece.1"))
+        let plan = DiscoveryPlan(roots: [directory], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [], traversalRoots: [directory])
+        let scan = try await discoverLibrary(plan: plan, previous: [], progress: { _ in })
+        let page = try XCTUnwrap(scan.pages.first { $0.source == source })
+        let before = try XCTUnwrap(page.locations.first?.provenance)
+        try body.write(to: directory.appendingPathComponent("piece.1"))
+        let access = ManualSourceAccess(generation: UUID(), allowedNetworkRoots: [])
+        do {
+            _ = try await manualInput(page: page, access: access)
+            XCTFail("A new preferred candidate must not inherit another path's provenance, even with equal content.")
+        } catch { XCTAssertTrue(error.localizedDescription.localizedCaseInsensitiveContains("scan"), error.localizedDescription) }
+        let scanAgain = try await discoverLibrary(plan: plan, previous: scan.pages, progress: { _ in })
+        let updated = try XCTUnwrap(scanAgain.pages.first { $0.source == source })
+        XCTAssertEqual(updated.fingerprint, page.fingerprint, "Content grouping remains independent of source paths.")
+        let after = try XCTUnwrap(updated.locations.first?.provenance)
+        XCTAssertNotEqual(after.dependencies, before.dependencies)
+        XCTAssertEqual(after.dependencies.last?.resolved, directory.appendingPathComponent("piece.1").resolvingSymlinksInPath())
+        _ = try await manualInput(page: updated, access: access)
+    }
+
+    func testPersistedIncludeScopeRejectsSymlinkEscapeAndExcludedTargets() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("IncludeScope-\(UUID().uuidString)")
+        let root = directory.appendingPathComponent("selected")
+        let section = root.appendingPathComponent("man1")
+        let excluded = root.appendingPathComponent("excluded")
+        try FileManager.default.createDirectory(at: section, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: excluded, withIntermediateDirectories: false)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned persisted-include scope files: \(error)") }
+        }
+        let body = Data("Owned identical bytes must still respect source scope.\n".utf8)
+        let allowed = section.appendingPathComponent("allowed.1")
+        let outside = directory.appendingPathComponent("outside.1")
+        let forbidden = excluded.appendingPathComponent("forbidden.1")
+        for url in [allowed, outside, forbidden] { try body.write(to: url) }
+        let link = section.appendingPathComponent("target.1")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: allowed)
+        let source = section.appendingPathComponent("aggregate.1")
+        try ".TH AGGREGATE 1\n.SH NAME\naggregate \\- source scope integration\n.SH DESCRIPTION\n.so man1/target.1\n"
+            .write(to: source, atomically: true, encoding: .utf8)
+        let plan = DiscoveryPlan(roots: [root], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [DiscoveryIssue(path: excluded.path, kind: .excluded, reason: "Owned source exclusion")],
+            traversalRoots: [root])
+        let scan = try await discoverLibrary(plan: plan, previous: [], progress: { _ in })
+        let page = try XCTUnwrap(scan.pages.first { $0.source == source })
+        let saved = directory.appendingPathComponent("inventory.json")
+        let savedBytes = try JSONEncoder().encode(scan)
+        try savedBytes.write(to: saved)
+        let restored = try XCTUnwrap(loadDiscovery(saved).pages.first { $0.source == source })
+        let access = ManualSourceAccess(generation: UUID(), allowedNetworkRoots: [])
+        _ = try await manualInput(page: restored, access: access)
+        for target in [outside, forbidden] {
+            try FileManager.default.removeItem(at: link)
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+            do {
+                _ = try await manualInput(page: restored, access: access)
+                XCTFail("Persisted selected-root/exclusion policy must reject the retargeted include at \(target.path).")
+            } catch let error as DiscoveryAccessError {
+                XCTAssertEqual(error.kind, .excluded)
+            } catch { XCTFail("Source scope must reject access before content/provenance comparison: \(error)") }
+        }
+        XCTAssertEqual(try Data(contentsOf: saved), savedBytes)
+        XCTAssertEqual(page.locations, restored.locations)
+    }
+
+    func testUnsupportedProvenanceVersionIsRejectedAndAbsentLegacyPolicyRemainsReadable() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("IncludeSchema-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned provenance-schema files: \(error)") }
+        }
+        let source = directory.appendingPathComponent("plain.1")
+        try ".TH PLAIN 1\n.SH NAME\nplain \\- legacy source schema\n.SH DESCRIPTION\nRetained legacy source marker.\n"
+            .write(to: source, atomically: true, encoding: .utf8)
+        let scan = try await discoverLibrary(plan: DiscoveryPlan(roots: [directory], allowedNetworkRoots: [], exclusions: []),
+            previous: [], progress: { _ in })
+        let page = try XCTUnwrap(scan.pages.first)
+        let location = try XCTUnwrap(page.locations.first)
+        let provenance = try XCTUnwrap(location.provenance)
+        var malformed = page
+        malformed.locations = [ManualLocation(source: location.source, root: location.root, name: location.name,
+            section: location.section, language: location.language, stamp: location.stamp,
+            provenance: ManualSourceProvenance(version: 99, scope: provenance.scope, dependencies: provenance.dependencies))]
+        let file = directory.appendingPathComponent("inventory.json")
+        let invalidBytes = try JSONEncoder().encode(LibraryScan(pages: [malformed], coverage: scan.coverage, cancelled: false))
+        try invalidBytes.write(to: file)
+        XCTAssertThrowsError(try loadDiscovery(file)) { error in
+            XCTAssertTrue(error.localizedDescription.localizedCaseInsensitiveContains("provenance"), error.localizedDescription)
+        }
+        XCTAssertEqual(try Data(contentsOf: file), invalidBytes)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let validJSON = String(decoding: try encoder.encode(scan), as: UTF8.self)
+        let provenanceJSON = String(decoding: try encoder.encode(provenance), as: UTF8.self)
+        let nullJSON = validJSON.replacingOccurrences(of: "\"provenance\":" + provenanceJSON, with: "\"provenance\":null")
+        XCTAssertNotEqual(nullJSON, validJSON, "The malformed fixture must replace an existing provenance object.")
+        let nullBytes = Data(nullJSON.utf8)
+        try nullBytes.write(to: file)
+        XCTAssertThrowsError(try loadDiscovery(file), "An explicit null cannot be interpreted as an absent legacy policy.")
+        XCTAssertEqual(try Data(contentsOf: file), nullBytes)
+        let dependency = try XCTUnwrap(provenance.dependencies.first)
+        let conflicting = ManualSourceDependency(requested: dependency.requested, resolved: dependency.resolved,
+            digest: String(repeating: "a", count: 64), parent: dependency.parent, line: dependency.line)
+        var ambiguous = page
+        ambiguous.locations.append(ManualLocation(source: location.source, root: location.root, name: location.name,
+            section: location.section, language: location.language, stamp: location.stamp,
+            provenance: ManualSourceProvenance(version: 1, scope: provenance.scope, dependencies: [conflicting])))
+        let ambiguousBytes = try encoder.encode(LibraryScan(pages: [ambiguous], coverage: scan.coverage, cancelled: false))
+        try ambiguousBytes.write(to: file)
+        XCTAssertThrowsError(try loadDiscovery(file), "A source location cannot choose between conflicting provenance records.")
+        XCTAssertEqual(try Data(contentsOf: file), ambiguousBytes)
+        var legacy = page
+        legacy.locations = [ManualLocation(source: location.source, root: location.root, name: location.name,
+            section: location.section, language: location.language, stamp: location.stamp)]
+        try JSONEncoder().encode(LibraryScan(pages: [legacy], coverage: scan.coverage, cancelled: false)).write(to: file)
+        let reopened = try XCTUnwrap(loadDiscovery(file).pages.first)
+        XCTAssertNil(reopened.locations.first?.provenance)
+        XCTAssertEqual(reopened.id, page.id)
+        let input = try await manualInput(page: reopened, access: ManualSourceAccess(generation: UUID(), allowedNetworkRoots: []))
+        XCTAssertTrue(String(decoding: input.bytes, as: UTF8.self).contains("Retained legacy source marker."))
     }
 
     private func finished(_ store: LibraryStore) async throws {
