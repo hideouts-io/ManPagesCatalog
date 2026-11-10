@@ -54,6 +54,9 @@ targets:
     platform: macOS
     sources:
       - path: NativeTests
+      - path: Benchmarks/ManualRichModels.swift
+      - path: Benchmarks/ManualRichGeneration.swift
+      - path: Benchmarks/ManualRichVerification.swift
     dependencies:
       - target: ManPageCatalog
     settings:
@@ -62,6 +65,20 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         SWIFT_VERSION: "5.9"
         CODE_SIGN_IDENTITY: "-"
+  ManPageCatalogUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: NativeUITests
+    dependencies:
+      - target: ManPageCatalog
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_IDENTITY: "-"
+        TEST_TARGET_NAME: ManPageCatalog
 
 schemes:
   ManPageCatalog:
@@ -69,6 +86,7 @@ schemes:
       targets:
         ManPageCatalog: all
         ManPageCatalogTests: [test]
+        ManPageCatalogUITests: [test]
     test:
       environmentVariables:
         MANPATH: /var/empty
@@ -76,3 +94,4 @@ schemes:
         "-libraryDirectory /tmp/ManPagesCatalog-test-cache": true
       targets:
         - ManPageCatalogTests
+        - ManPageCatalogUITests
