@@ -54,6 +54,9 @@ targets:
     platform: macOS
     sources:
       - path: NativeTests
+      - path: Benchmarks/ManualRichModels.swift
+      - path: Benchmarks/ManualRichGeneration.swift
+      - path: Benchmarks/ManualRichVerification.swift
     dependencies:
       - target: ManPageCatalog
     settings:

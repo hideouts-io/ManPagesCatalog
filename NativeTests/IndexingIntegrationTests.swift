@@ -4,6 +4,87 @@ import Darwin
 
 final class IndexingIntegrationTests: XCTestCase {
     @MainActor
+    func testProductionVerificationPreservesInputsThroughParentAliases() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ManualVerificationAliases-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        let suite = "ManualVerificationAliases.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let fixture = LibraryFixtureCleanup(directory: directory)
+        addTeardownBlock { () async throws -> Void in
+            try XCTUnwrap(UserDefaults(suiteName: suite)).removePersistentDomain(forName: suite)
+            do { try await fixture.remove() }
+            catch { XCTFail("Cannot remove owned manual-verification fixtures: \(error)") }
+        }
+        let corpus = directory.appendingPathComponent("corpus")
+        let token = UUID().uuidString
+        let options = ManualRichOptions(seed: 7, manuals: 2, largeEvery: 2, largeParagraphs: 1,
+            batchSize: 12, maxFiles: 28, maxStorageBytes: 16 * 1024 * 1024, freeReserveBytes: 10 * 1024 * 1024 * 1024)
+        let generated = try await manualRichGenerate(corpus, token, options, ManualRichInterrupt())
+        XCTAssertTrue(generated)
+        let root = corpus.appendingPathComponent("manuals")
+        defaults.set([root.path], forKey: "manualRoots")
+        let library = directory.appendingPathComponent("library")
+        let store = LibraryStore(directory: library, defaults: defaults)
+        fixture.track(store)
+        store.scanSelectedRoots()
+        try await waitForIndexing(store)
+        XCTAssertNil(store.errorMessage)
+        XCTAssertEqual(store.indexedCount, 8)
+        XCTAssertEqual(store.pages.flatMap(\.locations).count, 12)
+        let inventory = library.appendingPathComponent("discovery-v1.json")
+        let index = library.appendingPathComponent("search.sqlite")
+        let report = directory.appendingPathComponent("verification.json")
+        try manualRichVerifyProduction(corpus, token, inventory, index, report)
+        let verified = try manualRichRead(ManualRichProductionVerification.self, report)
+        XCTAssertTrue(verified.failures.isEmpty)
+        XCTAssertEqual(verified.observedManualLocations, 12)
+        XCTAssertEqual(verified.observedReadableIndexedManuals, 8)
+
+        let libraryAlias = directory.appendingPathComponent("library-alias")
+        let corpusAlias = directory.appendingPathComponent("corpus-alias")
+        try FileManager.default.createSymbolicLink(at: libraryAlias, withDestinationURL: library)
+        try FileManager.default.createSymbolicLink(at: corpusAlias, withDestinationURL: corpus)
+        let manifest = corpus.appendingPathComponent("manifest-v1.json")
+        let source = root.appendingPathComponent("installed/man1/launchctl.1")
+        let protected: [URL] = [inventory, index, manifest, source, report]
+        let retained: [URL: Data] = try Dictionary(uniqueKeysWithValues: protected.map { ($0, try Data(contentsOf: $0)) })
+        let indexHardLink = directory.appendingPathComponent("index-hard-link.json")
+        try FileManager.default.linkItem(at: index, to: indexHardLink)
+        let outputLink = directory.appendingPathComponent("linked-output.json")
+        try FileManager.default.createSymbolicLink(at: outputLink, withDestinationURL: report)
+        let denied: [URL] = [
+            libraryAlias.appendingPathComponent(inventory.lastPathComponent),
+            libraryAlias.appendingPathComponent(index.lastPathComponent),
+            corpusAlias.appendingPathComponent(manifest.lastPathComponent),
+            corpusAlias.appendingPathComponent("manuals/installed/man1/launchctl.1"),
+            indexHardLink,
+            outputLink
+        ]
+        for destination in denied {
+            XCTAssertThrowsError(try manualRichVerifyProduction(corpus, token, inventory, index, destination))
+            for (path, bytes) in retained {
+                XCTAssertEqual(try Data(contentsOf: path), bytes, "Verification must preserve protected bytes at \(path.path)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: indexHardLink), try XCTUnwrap(retained[index]))
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: outputLink.path), report.path)
+
+        let reports = directory.appendingPathComponent("reports")
+        let reportsAlias = directory.appendingPathComponent("reports-alias")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(at: reportsAlias, withDestinationURL: reports)
+        let separate = reportsAlias.appendingPathComponent("separate.json")
+        try manualRichVerifyProduction(corpus, token, inventory, index, separate)
+        let separateReport = try manualRichRead(ManualRichProductionVerification.self, reports.appendingPathComponent("separate.json"))
+        XCTAssertTrue(separateReport.failures.isEmpty)
+        try manualRichVerifyProduction(corpus, token, inventory, index, corpusAlias.appendingPathComponent("production-verification-v1.json"))
+        let defaultReport = try manualRichRead(ManualRichProductionVerification.self, corpus.appendingPathComponent("production-verification-v1.json"))
+        XCTAssertTrue(defaultReport.failures.isEmpty)
+        for (path, bytes) in retained { XCTAssertEqual(try Data(contentsOf: path), bytes) }
+    }
+
+    @MainActor
     func testCancelledFixtureCleanupPreservesFilesUntilItsOwnerReleases() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("IndexCleanupCancellation-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)

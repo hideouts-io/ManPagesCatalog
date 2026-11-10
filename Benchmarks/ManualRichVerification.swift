@@ -293,14 +293,65 @@ func manualRichColumn(_ statement: OpaquePointer, _ column: Int32) throws -> Str
     return value
 }
 
+/// The physical parent identity captured when a verification report destination is authorized.
+struct ManualRichVerificationOutput {
+    let url: URL
+    let parentDevice: dev_t
+    let parentInode: ino_t
+}
+
+/// Bind the report to its physical parent; lexical aliases cannot authorize replacing protected inputs.
+func manualRichVerificationOutput(root: URL, inventory: URL, index: URL, output: URL) throws -> ManualRichVerificationOutput {
+    let name = output.lastPathComponent
+    guard output.isFileURL, !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\0") else {
+        throw ManualRichError.invalid("Verification output must name a separate report file: \(output.path)")
+    }
+    let parent = output.deletingLastPathComponent().resolvingSymlinksInPath()
+    let parentState = try manualRichState(parent)
+    guard parentState.st_mode & S_IFMT == S_IFDIR, parentState.st_flags & UInt32(SF_DATALESS) == 0 else {
+        throw ManualRichError.invalid("Verification output parent must be a materialized directory: \(parent.path)")
+    }
+    let destination = parent.appendingPathComponent(name)
+    var existing = stat()
+    let destinationExists = lstat(destination.path, &existing) == 0
+    let destinationError = errno
+    if destinationExists {
+        guard existing.st_mode & S_IFMT == S_IFREG, existing.st_flags & UInt32(SF_DATALESS) == 0 else {
+            throw ManualRichError.invalid("Verification output must not replace an alias, placeholder or nonregular entry: \(destination.path)")
+        }
+    } else if destinationError != ENOENT {
+        throw ManualRichError.filesystem(destination.path, destinationError)
+    }
+    for input in [inventory, index] {
+        let physicalInput = input.resolvingSymlinksInPath()
+        let inputState = try manualRichState(physicalInput)
+        if destination.path == physicalInput.path || (destinationExists && existing.st_dev == inputState.st_dev && existing.st_ino == inputState.st_ino) {
+            throw ManualRichError.invalid("Verification output aliases production input \(input.path); choose a separate report file: \(destination.path)")
+        }
+    }
+    let corpus = try manualRichState(root.resolvingSymlinksInPath())
+    var ancestor = parent
+    while true {
+        let state = try manualRichState(ancestor)
+        if state.st_dev == corpus.st_dev, state.st_ino == corpus.st_ino {
+            guard parentState.st_dev == corpus.st_dev, parentState.st_ino == corpus.st_ino,
+                  name == "production-verification-v1.json" else {
+                throw ManualRichError.invalid("Verification output cannot replace corpus controls or sources; use its named verification report or a separate directory: \(destination.path)")
+            }
+            break
+        }
+        let next = ancestor.deletingLastPathComponent()
+        if next == ancestor { break }
+        ancestor = next
+    }
+    return ManualRichVerificationOutput(url: destination, parentDevice: parentState.st_dev, parentInode: parentState.st_ino)
+}
+
 /// Independently inspect persisted production inventory/FTS bodies; this does not call the scanner or formatter.
 func manualRichVerifyProduction(_ root: URL, _ token: String, _ inventory: URL, _ index: URL, _ output: URL) throws {
     let manifest = try manualRichLoadManifest(root, token)
     guard manifest.generationComplete else { throw ManualRichError.invalid("Production verification requires a completed generation manifest.") }
-    guard output.path != inventory.path, output.path != index.path,
-          !output.path.hasPrefix(root.path + "/") || output == root.appendingPathComponent("production-verification-v1.json") else {
-        throw ManualRichError.invalid("Choose a separate verification output; corpus control/source files and production inputs cannot be overwritten.")
-    }
+    let destination = try manualRichVerificationOutput(root: root, inventory: inventory, index: index, output: output)
     let saved = try manualRichRead(ManualRichObservedScan.self, inventory)
     let expectedByPath = Dictionary(uniqueKeysWithValues: manifest.sources.map { (root.appendingPathComponent($0.relativePath).path, $0) })
     let expectedGroups = Dictionary(grouping: manifest.sources, by: \.expectedID)
@@ -392,7 +443,12 @@ func manualRichVerifyProduction(_ root: URL, _ token: String, _ inventory: URL, 
         limitations: ["Physical generation counts are separate from production coverage counters and persisted formatter/FTS observations.",
             "Body-marker checks establish readable persisted formatter output; they do not validate rendered WebKit, page Find, PDF export or every source paragraph.",
             "SQLite was opened read-only using the host SQLite API. Corpus generation/verification warm source caches; no controlled cold-cache claim is made."])
-    try manualRichWrite(report, output)
-    guard failures.isEmpty else { throw ManualRichError.invalid("Production verification has \(failures.count) failures; report retained at \(output.path): \(failures.prefix(3).joined(separator: "; "))") }
-    print("event=production-verification observedDiscoveryFiles=\(report.observedDiscoveryFiles) observedUniqueManuals=\(report.observedUniqueManuals) readableIndexedManuals=\(readable) output=\(output.path)")
+    // Recheck after verification, then write the bound physical path rather than the caller's mutable parent alias.
+    let checked = try manualRichVerificationOutput(root: root, inventory: inventory, index: index, output: destination.url)
+    guard checked.url == destination.url, checked.parentDevice == destination.parentDevice, checked.parentInode == destination.parentInode else {
+        throw ManualRichError.invalid("Verification output parent changed during verification; no report written: \(destination.url.path)")
+    }
+    try manualRichWrite(report, destination.url)
+    guard failures.isEmpty else { throw ManualRichError.invalid("Production verification has \(failures.count) failures; report retained at \(destination.url.path): \(failures.prefix(3).joined(separator: "; "))") }
+    print("event=production-verification observedDiscoveryFiles=\(report.observedDiscoveryFiles) observedUniqueManuals=\(report.observedUniqueManuals) readableIndexedManuals=\(readable) output=\(destination.url.path)")
 }
