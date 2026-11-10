@@ -41,6 +41,9 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
     @Published private(set) var findGeneration: UUID?
     @Published private(set) var findOperation = InteractionOperation.findNext
     private(set) var pendingFindCallbacks = 0
+#if DEBUG
+    var onReaderPositionRead: (@MainActor () async -> Void)?
+#endif
     var onReference: ((String, String) -> Void)?
     private var previous: [ReaderVisit] = []
     private var following: [ReaderVisit] = []
@@ -52,8 +55,15 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
     private var findRequest = UUID()
     private var openRequest = UUID()
     private var activeNavigation: WKNavigation?
+    private let sourceAuthority: ManualSourceAuthority
+    private var documentAccess: ManualSourceAccess?
 
-    override init() {
+    override convenience init() {
+        self.init(authority: ManualSourceAuthority(selectedRoots: []))
+    }
+
+    init(authority: ManualSourceAuthority) {
+        sourceAuthority = authority
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: config)
@@ -66,15 +76,19 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
 
     func open(page: ManualPage, context: BrowseContext) async {
         let token = UUID()
+        openRequest = token
         InteractionDiagnostics.started(operation: .reader, generation: token, query: context.query, documentID: page.id)
-        if !page.fingerprint.isEmpty && self.page?.id == page.id && self.page?.fingerprint == page.fingerprint && errorMessage == nil {
+        if !page.fingerprint.isEmpty && self.page?.id == page.id && self.page?.fingerprint == page.fingerprint &&
+            self.page?.source == page.source && self.page?.locations == page.locations &&
+            self.page?.root == page.root && self.page?.name == page.name &&
+            self.page?.section == page.section && self.page?.language == page.language &&
+            documentAccess?.generation == sourceAuthority.snapshot().generation && errorMessage == nil {
             InteractionDiagnostics.documentBound(operation: .reader, generation: token, documentGeneration: request)
             InteractionDiagnostics.finished(operation: .reader, generation: token, outcome: loading ? .blocked : .reused,
                 detail: loading ? "The unchanged document is still loading." : "The existing document was retained without formatting or navigation.")
             if InteractionDiagnostics.isEnabled && !loading { readerGeneration = token }
             return
         }
-        openRequest = token
         do {
             let visit = try await currentVisit()
             guard token == openRequest else {
@@ -93,22 +107,38 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
 
     func back() async -> BrowseContext? {
         guard let visit = previous.last, !loading else { return nil }
+        let token = UUID()
+        openRequest = token
         do {
-            if let current = try await currentVisit() { following.append(current) }
+            let current = try await currentVisit()
+            guard token == openRequest else { return nil }
+            if let current { following.append(current) }
             previous.removeLast()
-            load(visit, generation: UUID())
+            load(visit, generation: token)
             return visit.context
-        } catch { errorMessage = error.localizedDescription; return nil }
+        } catch {
+            guard token == openRequest else { return nil }
+            errorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     func forward() async -> BrowseContext? {
         guard let visit = following.last, !loading else { return nil }
+        let token = UUID()
+        openRequest = token
         do {
-            if let current = try await currentVisit() { previous.append(current) }
+            let current = try await currentVisit()
+            guard token == openRequest else { return nil }
+            if let current { previous.append(current) }
             following.removeLast()
-            load(visit, generation: UUID())
+            load(visit, generation: token)
             return visit.context
-        } catch { errorMessage = error.localizedDescription; return nil }
+        } catch {
+            guard token == openRequest else { return nil }
+            errorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     func retry() {
@@ -117,9 +147,11 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     private func load(_ visit: ReaderVisit, generation: UUID) {
+        openRequest = generation
         InteractionDiagnostics.started(operation: .reader, generation: generation, query: visit.context.query, documentID: visit.page.id)
         task?.cancel()
         activeNavigation = nil
+        documentAccess = nil
         webView.stopLoading()
         request = generation
         let token = request
@@ -143,9 +175,14 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
         webView.pageZoom = visit.zoom
         task = Task {
             do {
-                let html = try await manualHTML(source: visit.page.source)
+                let access = sourceAuthority.snapshot()
+                let input = try await manualInput(page: visit.page, access: access)
+                try sourceAuthority.requireCurrent(access)
+                let html = try await manualHTML(input: input)
                 try Task.checkCancellation()
                 guard request == token else { return }
+                try sourceAuthority.requireCurrent(access)
+                documentAccess = access
                 activeNavigation = webView.loadHTMLString(html, baseURL: nil)
             } catch is CancellationError { return }
             catch {
@@ -165,21 +202,26 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
                 throw ManualToolError(message: "WebKit returned an invalid reading position.")
             }
             scroll = value
+#if DEBUG
+            await onReaderPositionRead?()
+#endif
         } else { scroll = pendingScroll }
         return ReaderVisit(page: page, context: context, scroll: scroll, find: findQuery, zoom: webView.pageZoom)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard let navigation, navigation === activeNavigation else { return }
+        guard let navigation, navigation === activeNavigation, let access = documentAccess else { return }
         let token = request
         Task {
             do {
                 let value = try await webView.evaluateJavaScript("JSON.stringify(Array.from(document.querySelectorAll('h1[id],h2[id],h3[id]')).map(e=>({id:e.id,title:e.textContent.trim()})))")
                 guard token == request else { return }
+                try sourceAuthority.requireCurrent(access)
                 guard let json = value as? String else { throw ManualToolError(message: "WebKit returned an invalid outline.") }
                 headings = try JSONDecoder().decode([ReaderHeading].self, from: Data(json.utf8))
                 _ = try await webView.callAsyncJavaScript("window.scrollTo(0, offset)", arguments: ["offset": pendingScroll], in: nil, contentWorld: .page)
                 guard token == request else { return }
+                try sourceAuthority.requireCurrent(access)
                 loading = false
                 if !pendingFind.isEmpty { findStatus = "Use Next or Previous to resume Find" }
                 InteractionDiagnostics.finished(operation: .reader, generation: token, outcome: .completed, detail: "WebKit navigation, outline decoding and scroll restoration completed.")
@@ -354,7 +396,13 @@ final class ManualReader: NSObject, ObservableObject, WKNavigationDelegate {
                 destination = try await chooseExportDestination(window: window, filename: "\(page.name).\(page.section).pdf",
                     contentType: .pdf, title: "Export Manual as PDF", identifier: "manualPDFExportPanel")
                 guard let destination else { return }
-                try await renderManual(source: page.source, destination: destination)
+                let access = sourceAuthority.snapshot()
+                let input = try await manualInput(page: page, access: access)
+                try sourceAuthority.requireCurrent(access)
+                let bytes = try await renderedManualPDF(input: input)
+                try Task.checkCancellation()
+                try sourceAuthority.requireCurrent(access)
+                try bytes.write(to: destination, options: .atomic)
                 message = "Exported \(destination.lastPathComponent)"
             } catch {
                 if let destination {

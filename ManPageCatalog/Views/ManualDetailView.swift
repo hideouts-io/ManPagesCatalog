@@ -49,7 +49,7 @@ struct ManualDetailView: View {
                             Text(error).textSelection(.enabled)
                             Button("Retry") { reader.retry() }.accessibilityIdentifier("retryManual")
                         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
-                            .accessibilityIdentifier("readerError")
+                            .accessibilityElement(children: .contain).accessibilityIdentifier("readerError")
                     }
                 }
             } else {
@@ -185,7 +185,9 @@ struct ManualDetailView: View {
         return VStack(alignment: .leading, spacing: 12) {
             Text("Original documentation").font(.headline)
             Text(page.source.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                .accessibilityIdentifier("manualSourcePath")
             Text("Collection: \(page.root.path)\nLanguage: \(page.language == "unspecified" ? "Not declared" : page.language)").font(.caption).textSelection(.enabled)
+            ManualCatalogIssueView(manualID: page.id)
             if page.locations.count > 1 {
                 DisclosureGroup("\(page.locations.count) locations / aliases with identical content") {
                     ScrollView {
@@ -210,6 +212,28 @@ struct ManualDetailView: View {
                 Text("A matching name does not prove this manual describes that executable version.").font(.caption).foregroundStyle(.secondary)
                 Button("Copy Executable Path") { reader.copy(executable) }.accessibilityIdentifier("copyExecutable")
             }
+        }
+    }
+}
+
+/// Indexing updates the catalog while the reader retains its selected visit and source location.
+struct ManualCatalogIssueView: View {
+    let manualID: String
+    @EnvironmentObject var library: LibraryStore
+
+    var body: some View {
+        if let problem = library.problemPages.first(where: { $0.id == manualID })?.problem, !problem.isEmpty {
+            GroupBox("Recorded catalog issue") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Recorded for this manual’s content and its identical source locations. Reading and PDF export report their own results.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(problem).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("manualCatalogIssueText")
+                    }.frame(maxHeight: 140)
+                }
+            }.accessibilityElement(children: .contain).accessibilityIdentifier("manualCatalogIssue")
         }
     }
 }

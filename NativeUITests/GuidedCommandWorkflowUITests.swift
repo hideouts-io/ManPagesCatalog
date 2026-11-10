@@ -240,8 +240,41 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
         }
     }
 
-    /// Each launch owns only its UUID library and refuses to terminate a preexisting application.
+    func testSourceDetailsShowsActualRecordedFormatterIssue() throws {
+        let source = URL(fileURLWithPath: "/usr/share/man/man5/sudoers.5")
+        try withPreparedApplication(prepare: { directory in
+            try seedManual(source: source, description: "", directory: directory)
+        }) { application, directory in
+            try click(identifier: "result-\(source.path)", application: application)
+            let readerError = try element(identifier: "readerError", application: application)
+            XCTAssertEqual(readerError.buttons.matching(identifier: "retryManual").count, 1)
+            XCTAssertTrue(try element(identifier: "retryManual", application: application).isEnabled)
+            try click(identifier: "manageSources", application: application)
+            try click(identifier: "resumeIndexing", application: application)
+            let recorded = try waitForRecordedFormatterIssue(directory: directory, source: source)
+            let problem = try XCTUnwrap(recorded.problem)
+            XCTAssertFalse(recorded.indexed, "Unsupported formatter output must not become verified full text.")
+            XCTAssertTrue(problem.contains(source.path), problem)
+            XCTAssertTrue(problem.contains("(exit 4):"), problem)
+            try click(identifier: "sourcesSearch", application: application)
+            try click(identifier: "sourceDetails", application: application)
+            try waitForText(problem, identifier: "manualCatalogIssueText", application: application)
+            try waitForText(source.path, identifier: "manualSourcePath", application: application)
+            try waitForText("sudoers(5)", identifier: "readerTitle", application: application)
+            XCTAssertTrue(try element(identifier: "readerError", application: application).exists)
+            XCTAssertTrue(try element(identifier: "retryManual", application: application).isEnabled)
+            try attachOwnedWindow(application: application, name: "Source Details with actual recorded formatter issue")
+        }
+    }
+
     private func withOwnedApplication(_ workflow: (XCUIApplication, URL) throws -> Void) throws {
+        try withPreparedApplication(prepare: { directory in
+            try seedInstalledManual(directory: directory)
+        }, workflow: workflow)
+    }
+
+    /// Each launch owns only its UUID library and refuses to terminate a preexisting application.
+    private func withPreparedApplication(prepare: (URL) throws -> Void, workflow: (XCUIApplication, URL) throws -> Void) throws {
         let application = XCUIApplication()
         guard application.state == .notRunning else {
             throw WorkflowTestError(message: "The target application is already running. Preserve that instance and close it before this isolated UI test.")
@@ -250,7 +283,7 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         var ownsLaunch = false
         registerOwnedApplicationCleanup(application: application, directory: directory, ownsLaunch: { ownsLaunch })
-        try seedInstalledManual(directory: directory)
+        try prepare(directory)
         application.launchArguments = ["-libraryDirectory", directory.path]
         application.launchEnvironment = ["MANPATH": "/var/empty", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
         guard application.state == .notRunning else {
@@ -484,29 +517,80 @@ final class GuidedCommandWorkflowUITests: XCTestCase {
 
     /// Seed the actual installed manual using the existing discovery-v1 schema, with its real content identity and file stamp.
     private func seedInstalledManual(directory: URL) throws {
-        let source = URL(fileURLWithPath: "/usr/share/man/man1/ls.1")
-        let root = URL(fileURLWithPath: "/usr/share/man")
+        try seedManual(source: URL(fileURLWithPath: "/usr/share/man/man1/ls.1"), description: "List directory contents", directory: directory)
+    }
+
+    private func seedManual(source: URL, description: String, directory: URL) throws {
+        let name = source.deletingPathExtension().lastPathComponent
+        let section = source.pathExtension
+        guard source.isFileURL, source.path.hasPrefix("/"), !name.isEmpty, !section.isEmpty,
+              source.deletingLastPathComponent().lastPathComponent == "man\(section)" else {
+            throw WorkflowTestError(message: "The installed UI test manual must have an absolute man<section>/<name>.<section> source path.")
+        }
+        let root = source.deletingLastPathComponent().deletingLastPathComponent()
         var state = stat()
         guard lstat(source.path, &state) == 0 else {
-            throw WorkflowTestError(message: "Cannot inspect the installed ls manual at \(source.path): errno \(errno).")
+            throw WorkflowTestError(message: "Cannot inspect the installed manual at \(source.path): errno \(errno).")
         }
         guard state.st_mode & S_IFMT == S_IFREG, state.st_size > 0, state.st_size <= 1_048_576 else {
-            throw WorkflowTestError(message: "The installed ls manual must be a nonempty regular file no larger than 1 MB.")
+            throw WorkflowTestError(message: "The installed UI test manual must be a nonempty regular file no larger than 1 MB.")
         }
         let content = try Data(contentsOf: source)
         let fingerprint = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
         let stamp = "direct:\(source.path):\(state.st_dev):\(state.st_ino):\(state.st_size):\(state.st_mtimespec.tv_sec):\(state.st_mtimespec.tv_nsec):\(state.st_ctimespec.tv_sec):\(state.st_ctimespec.tv_nsec)"
-        let location = FixtureManualLocation(source: source, root: root, name: "ls", section: "1", language: "unspecified", stamp: stamp)
-        let page = FixtureManualPage(name: "ls", section: "1", source: source, root: root, fingerprint: fingerprint,
-            language: "unspecified", locations: [location], description: "List directory contents", indexed: false, problem: nil)
+        let location = FixtureManualLocation(source: source, root: root, name: name, section: section, language: "unspecified", stamp: stamp)
+        let page = FixtureManualPage(name: name, section: section, source: source, root: root, fingerprint: fingerprint,
+            language: "unspecified", locations: [location], description: description, indexed: false, problem: nil)
         let inventory = FixtureLibraryScan(pages: [page], coverage: [], cancelled: false)
         let data = try JSONEncoder().encode(inventory)
         let verified = try JSONDecoder().decode(FixtureLibraryScan.self, from: data)
         guard verified.pages.count == 1, verified.pages[0].source == source,
-              verified.pages[0].locations.count == 1, verified.pages[0].fingerprint == fingerprint else {
+              verified.pages[0].name == name, verified.pages[0].section == section,
+              verified.pages[0].locations.count == 1, verified.pages[0].fingerprint == fingerprint,
+              !verified.pages[0].indexed, verified.pages[0].problem == nil else {
             throw WorkflowTestError(message: "The owned UI test inventory did not preserve its installed manual identity.")
         }
         try data.write(to: directory.appendingPathComponent("discovery-v1.json"), options: .atomic)
+    }
+
+    private func waitForRecordedFormatterIssue(directory: URL, source: URL) throws -> FixtureManualPage {
+        var result: Result<FixtureManualPage, Error>?
+        let inventory = directory.appendingPathComponent("discovery-v1.json")
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            if result != nil { return true }
+            do {
+                let bytes = try Data(contentsOf: inventory)
+                guard bytes.count <= 1_048_576 else {
+                    throw WorkflowTestError(message: "The owned formatter UI inventory exceeded its 1 MB fixture limit.")
+                }
+                let scan = try JSONDecoder().decode(FixtureLibraryScan.self, from: bytes)
+                guard !scan.cancelled, scan.pages.count == 1, let page = scan.pages.first,
+                      page.source == source, page.locations.count == 1,
+                      page.locations.first?.source == source,
+                      page.name == source.deletingPathExtension().lastPathComponent,
+                      page.section == source.pathExtension else {
+                    throw WorkflowTestError(message: "The owned formatter UI inventory changed its installed source identity.")
+                }
+                guard !page.indexed else {
+                    throw WorkflowTestError(message: "The unsupported installed manual unexpectedly became indexed without the required formatter issue.")
+                }
+                if let problem = page.problem {
+                    guard !problem.isEmpty else {
+                        throw WorkflowTestError(message: "The owned formatter UI inventory recorded an empty issue.")
+                    }
+                    result = .success(page)
+                    return true
+                }
+                return false
+            } catch {
+                result = .failure(error)
+                return true
+            }
+        }, object: nil)
+        guard XCTWaiter.wait(for: [expectation], timeout: 10) == .completed else {
+            throw WorkflowTestError(message: "Production indexing did not persist the installed manual's formatter issue within ten seconds.")
+        }
+        return try XCTUnwrap(result, "The formatter UI inventory wait completed without a result.").get()
     }
 
     private func quotedShellWord(_ word: String) -> String {

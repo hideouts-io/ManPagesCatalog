@@ -397,10 +397,21 @@ final class GuidedTerminalIntegrationTests: XCTestCase {
         for _ in 0..<300 where !output(session).contains(expected) { try await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertTrue(output(session).contains(expected), "The PTY did not render expected owned output: \(expected)")
     }
+}
 
+@MainActor
+extension XCTestCase {
     /// SwiftUI's own-process AX provider executes synchronously on the caller's thread.
     /// Keep these public AX queries on MainActor and restrict them to the uniquely identified test window.
     private func accessibilityWindow(windowIdentifier: String) throws -> AXUIElement {
+        let matches = try accessibilityWindows(windowIdentifier: windowIdentifier)
+        guard matches.count == 1, let window = matches.first else {
+            throw TerminalSessionError(message: "Expected one accessible owned window \(windowIdentifier); found \(matches.count).")
+        }
+        return window
+    }
+
+    private func accessibilityWindows(windowIdentifier: String) throws -> [AXUIElement] {
         let owned = NSApplication.shared.windows.filter { $0.accessibilityIdentifier() == windowIdentifier }
         guard owned.count == 1 else {
             throw TerminalSessionError(message: "Expected one owned test window \(windowIdentifier); found \(owned.count).")
@@ -412,10 +423,19 @@ final class GuidedTerminalIntegrationTests: XCTestCase {
         }
         let windows = try accessibilityElements(element: application, attribute: kAXWindowsAttribute as CFString)
         let matches = try windows.filter { try accessibilityIdentifier(element: $0) == windowIdentifier }
-        guard matches.count == 1, let window = matches.first else {
-            throw TerminalSessionError(message: "Expected one accessible owned window \(windowIdentifier); found \(matches.count).")
+        guard matches.count <= 1 else {
+            throw TerminalSessionError(message: "The owned accessibility window identifier \(windowIdentifier) is ambiguous; found \(matches.count).")
         }
-        return window
+        return matches
+    }
+
+    func waitForAccessibilityWindow(windowIdentifier: String, deadline: TimeInterval) async throws {
+        while try accessibilityWindows(windowIdentifier: windowIdentifier).isEmpty {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw TerminalSessionError(message: "The owned native window \(windowIdentifier) was not published to accessibility before its render deadline.")
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
     }
 
     /// AXUIElement's public Core Foundation contract uses CFTypeRef; validate every consumed result before use.
@@ -459,7 +479,7 @@ final class GuidedTerminalIntegrationTests: XCTestCase {
         guard roleStatus == .success, let roleName = role as? String else {
             throw TerminalSessionError(message: "Cannot read owned accessibility role for \(identifier ?? "unidentified chrome") at depth \(depth), process \(processIdentifier): status \(roleStatus.rawValue).")
         }
-        // Command controls live in native chrome. The manual's remote WebKit content is outside this test's boundary.
+        // Native controls live in native chrome. The manual's remote WebKit content is outside this test's boundary.
         if roleName == "AXWebArea" { return [element] }
         let children = try accessibilityElements(element: element, attribute: kAXChildrenAttribute as CFString)
         var descendants: [AXUIElement] = [element]
@@ -470,7 +490,7 @@ final class GuidedTerminalIntegrationTests: XCTestCase {
         return descendants
     }
 
-    private func accessibilityIdentifiers(windowIdentifier: String) throws -> Set<String> {
+    func accessibilityIdentifiers(windowIdentifier: String) throws -> Set<String> {
         let window = try accessibilityWindow(windowIdentifier: windowIdentifier)
         let elements = try accessibilityDescendants(element: window, depth: 64)
         return Set(try elements.compactMap { try accessibilityIdentifier(element: $0) })
@@ -486,7 +506,7 @@ final class GuidedTerminalIntegrationTests: XCTestCase {
         return control
     }
 
-    private func accessibilityTextValue(windowIdentifier: String, controlIdentifier: String) throws -> String {
+    func accessibilityTextValue(windowIdentifier: String, controlIdentifier: String) throws -> String {
         let control = try accessibilityControl(windowIdentifier: windowIdentifier, controlIdentifier: controlIdentifier)
         var names: CFArray?
         let namesStatus = AXUIElementCopyAttributeNames(control, &names)
@@ -502,7 +522,7 @@ final class GuidedTerminalIntegrationTests: XCTestCase {
         return text
     }
 
-    private func pressAccessibilityControl(windowIdentifier: String, controlIdentifier: String) async throws {
+    func pressAccessibilityControl(windowIdentifier: String, controlIdentifier: String) async throws {
         let before = XCTAttachment(string: "before AXPress\nwindow: \(windowIdentifier)\ncontrol: \(controlIdentifier)\nowned process: \(getpid())")
         before.name = "Owned command control before press"
         before.lifetime = .keepAlways
@@ -518,5 +538,4 @@ final class GuidedTerminalIntegrationTests: XCTestCase {
         after.lifetime = .keepAlways
         add(after)
     }
-
 }
