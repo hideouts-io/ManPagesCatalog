@@ -841,9 +841,17 @@ private func createCoverageExportFile(directory: Int32, name: String, bytes: Dat
 
 /// Publication replaces one pathname atomically; the pair is not a crash-atomic transaction.
 func publishCoverageExport(_ export: CoverageExport) throws {
-    guard renameat(export.recovery.fileDescriptor, export.replacement.name,
-                   export.parent.fileDescriptor, export.destination.lastPathComponent) == 0 else {
-        throw coverageExportError(operation: "publish coverage output", destination: export.destination, code: errno)
+    let result: Int32
+    if export.original == nil {
+        result = renameatx_np(export.recovery.fileDescriptor, export.replacement.name,
+                             export.parent.fileDescriptor, export.destination.lastPathComponent, UInt32(RENAME_EXCL))
+    } else {
+        result = renameat(export.recovery.fileDescriptor, export.replacement.name,
+                          export.parent.fileDescriptor, export.destination.lastPathComponent)
+    }
+    let failure = errno
+    guard result == 0 else {
+        throw coverageExportError(operation: "publish coverage output", destination: export.destination, code: failure)
     }
 }
 

@@ -6,6 +6,58 @@ import SwiftUI
 @testable import Man_Page_Catalog
 
 final class DiscoveryIntegrationTests: XCTestCase {
+    func testAbsentCoveragePublicationPreservesNewDestination() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let replacement = Data("prepared coverage".utf8)
+        let export = try prepareCoverageExport(destination: destination, bytes: replacement)
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        XCTAssertNil(export.original)
+        let foreign = Data("independent writer before publication".utf8)
+        try foreign.write(to: destination, options: .atomic)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try publishCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+            XCTAssertTrue(error.localizedDescription.contains("errno \(EEXIST)"))
+        }
+        XCTAssertEqual(try Data(contentsOf: destination), foreign)
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_dev, before.st_dev)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent(export.replacement.name)), replacement)
+    }
+
+    func testAbsentCoveragePublicationPreservesNewSymbolicLink() throws {
+        let directory = try exportRecoveryDirectory()
+        defer { removeExportRecoveryDirectory(directory) }
+        let destination = directory.appendingPathComponent("coverage.json")
+        let replacement = Data("prepared coverage".utf8)
+        let export = try prepareCoverageExport(destination: destination, bytes: replacement)
+        defer { XCTAssertTrue(closeCoverageExport(export).isEmpty) }
+        XCTAssertNil(export.original)
+        let target = directory.appendingPathComponent("independent-target.json")
+        let foreign = Data("independent symbolic-link target".utf8)
+        try foreign.write(to: target, options: .atomic)
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: target)
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        XCTAssertThrowsError(try publishCoverageExport(export)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(destination.path))
+            XCTAssertTrue(error.localizedDescription.contains("errno \(EEXIST)"))
+        }
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_dev, before.st_dev)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(after.st_mode & S_IFMT, S_IFLNK)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: destination.path), target.path)
+        XCTAssertEqual(try Data(contentsOf: target), foreign)
+        XCTAssertEqual(try Data(contentsOf: export.recoveryURL.appendingPathComponent(export.replacement.name)), replacement)
+    }
+
     func testFailedAtomicCompanionPreservesForeignReplacement() throws {
         try verifyFailedAtomicDestinationPreservation(previous: Data("previous companion".utf8))
     }
