@@ -5,7 +5,7 @@ struct ManPageCatalogApp: App {
     @NSApplicationDelegateAdaptor(CatalogApplicationDelegate.self) private var applicationDelegate
     @AppStorage("manualAppearance") private var appearance = "system"
     @StateObject private var library: LibraryStore
-    @StateObject private var reader = ManualReader()
+    @StateObject private var reader: ManualReader
     @StateObject private var terminal = TerminalSession()
 
     init() {
@@ -17,7 +17,9 @@ struct ManPageCatalogApp: App {
             directory = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/ManPagesCatalog")
         }
-        _library = StateObject(wrappedValue: LibraryStore(directory: directory, defaults: defaults))
+        let library = LibraryStore(directory: directory, defaults: defaults)
+        _library = StateObject(wrappedValue: library)
+        _reader = StateObject(wrappedValue: ManualReader(authority: library.sourceAuthority))
     }
     @Environment(\.openWindow) private var openWindow
 

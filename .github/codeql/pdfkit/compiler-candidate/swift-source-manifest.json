@@ -1,0 +1,114 @@
+{
+  "commit": "064859e41d68596f486c5d724401cb370f260409",
+  "path_prefix": "lib/ClangImporter",
+  "sources": [
+    {
+      "name": "CFDatabase.def",
+      "git_blob": "85540a92e66b4c1ad9a729f3c9ffbd6461bf9d25",
+      "sha256": "28ee74d3acb69d0f4f98001ee234fc6ee1b827598df39f80fb3b9931c5aacf17",
+      "bytes": 15433
+    },
+    {
+      "name": "CFTypeInfo.h",
+      "git_blob": "819d9a4db853d569b84cd8c59ab9ac802b5facb6",
+      "sha256": "5066ab6c23ff8ba502318427167c6051c19efbecdf9dbd66c32d84fc97e7aef7",
+      "bytes": 2891
+    },
+    {
+      "name": "CXXMethodBridging.h",
+      "git_blob": "ff095551cb9fa5c375e6bde4470ef72d5db1acd8",
+      "sha256": "9326d87912f1d78797c72dc25a62673d42a971c587f5f0549ff775b06979b478",
+      "bytes": 5367
+    },
+    {
+      "name": "ClangAdapter.h",
+      "git_blob": "9110a2e80adb770c0ba24a331b86f97b7703841d",
+      "sha256": "06aa8221eafea770f09370a4b7dbccaf8da2d3ee76eb94b0b59617600c032f64",
+      "bytes": 6962
+    },
+    {
+      "name": "ClangClassTemplateNamePrinter.h",
+      "git_blob": "f93975bb1f3c7ade5373aa31da69e83f315997d8",
+      "sha256": "06a905993cdd212d0cc2bac747d1e73e49dc65c424a49511633ba40262f5d03e",
+      "bytes": 1558
+    },
+    {
+      "name": "ClangDerivedConformances.h",
+      "git_blob": "d7ba92906263e2ec01d4085d421cb0d8fbb7c56f",
+      "sha256": "b75e9e471d0f8531908995c85677b60d9db27892fe8590b28534ac0f71432ae1",
+      "bytes": 4308
+    },
+    {
+      "name": "ClangDiagnosticConsumer.h",
+      "git_blob": "a0eca7c303e6244c11dd66d5e77a3038673d17d8",
+      "sha256": "9a5c845ecec2fd9df231ef63f93bfc98bf4108afe486fb7568ca628ba316f42c",
+      "bytes": 3694
+    },
+    {
+      "name": "ClangIncludePaths.h",
+      "git_blob": "7f08397fa7d511738469440194df781b8b48f7ef",
+      "sha256": "9058e1a86d2cba8697a78e7de62b4d7980cb72b183ea46d1e332385d26cc0e87",
+      "bytes": 871
+    },
+    {
+      "name": "ClangSourceBufferImporter.h",
+      "git_blob": "e905baf84be50dceccb75618b730942afa586a7f",
+      "sha256": "c2ded62c5b3ae7901ddc36ddcf75fc352f4c280db2519ffceee5908b5dd70d82",
+      "bytes": 2118
+    },
+    {
+      "name": "ImportEnumInfo.h",
+      "git_blob": "8577033fb661903c0b74f1e5b4c5d5b6a26c0350",
+      "sha256": "681157de2a60fd432823bdd3200128377dca338c4a616849b581bb7b07e268d1",
+      "bytes": 6528
+    },
+    {
+      "name": "ImportMacro.cpp",
+      "git_blob": "f9f45e73851b741359e6c6ae6e5741140c3cdf9b",
+      "sha256": "5b97978e97ed3dcb31d74f304b37156c8110e5cda38ff3f36fb99bb59c7f3402",
+      "bytes": 37736
+    },
+    {
+      "name": "ImportName.h",
+      "git_blob": "9dde3b56e2631e7d1a9b2cad1bfd31c5fb81e18f",
+      "sha256": "746d35736eefd13a75606e17d9b6e3bbffbff8f19763b4f2148380609a33076d",
+      "bytes": 20865
+    },
+    {
+      "name": "ImporterImpl.h",
+      "git_blob": "0a6a36b9103f3aec44fcf724e819f4bf76c3a0f8",
+      "sha256": "b3b595ecbc2adc18e8753cc6f04d09d2425bb15899a464335761e02734a1ef38",
+      "bytes": 88981
+    },
+    {
+      "name": "InferredAttributes.def",
+      "git_blob": "3eaa8e4139aaf60a00be873a795339df43cba395",
+      "sha256": "2e61e579d14d5cb7adf23930928fba1e6aced0aee6ee48fc98318ed9459d0f2a",
+      "bytes": 1334
+    },
+    {
+      "name": "MacroTable.def",
+      "git_blob": "c8078e23f5bcff40ee747aa76a56e8040e7abbfd",
+      "sha256": "6ae89a67e70e16ef9ae30edaaaa0543a90a9ea1a7096dd492b2205e03a4b8552",
+      "bytes": 1527
+    },
+    {
+      "name": "MappedTypes.def",
+      "git_blob": "ca7b63a7012501c6b24097cf58ca6a81e4296f4d",
+      "sha256": "88e6853ef6e76e64d198933ead36ed40f4871c56bd0a8eb1095d15ff47649272",
+      "bytes": 8162
+    },
+    {
+      "name": "SwiftDeclSynthesizer.h",
+      "git_blob": "1ce3294fa7e0025a3b04e48a5e4d30dd3029403b",
+      "sha256": "7901cdea46164adb39b6f2f25ba3fa569f882f334219553a60e11dec58fa063a",
+      "bytes": 16247
+    },
+    {
+      "name": "SwiftLookupTable.h",
+      "git_blob": "5849233c110b6aa5e4bea0d2e914fb2b1f3b571e",
+      "sha256": "2be512b91b9d68d3568eebc221aa4085838763d15795983212d75a0fd50f5eed",
+      "bytes": 24201
+    }
+  ]
+}
