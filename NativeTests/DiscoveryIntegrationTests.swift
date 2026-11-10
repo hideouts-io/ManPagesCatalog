@@ -6,6 +6,129 @@ import SwiftUI
 @testable import Man_Page_Catalog
 
 final class DiscoveryIntegrationTests: XCTestCase {
+    func testLateCommentProloguesDiscoverNonstandardNamesAndIncludedHeaders() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryLateHeader-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned late-header fixtures: \(error)") }
+        }
+        let original = try Data(contentsOf: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"))
+        let staticSource = try Data(contentsOf: URL(fileURLWithPath: "/usr/share/man/man1/4ccconv.1"))
+        let padding = Data(String(repeating: ".\\\" padding\n", count: 8_192).utf8)
+        XCTAssertGreaterThan(padding.count, 65_536)
+        let extended = padding + original
+        let fixtures: [(name: String, bytes: Data)] = [
+            ("early-header", original),
+            ("late-header", extended),
+            ("late-control.1", extended),
+            ("late-alias", padding + Data(".so early-header\n".utf8)),
+            ("late-spaced-header", padding + Data(". TH 7 1\n.SH NAME\n7 \\- static title spacing witness\n".utf8)),
+            ("included-source", staticSource),
+            ("late-included-header", padding + Data(".so included-source\n.Pp\nOwned late header inclusion marker.\n".utf8))
+        ]
+        for fixture in fixtures { try fixture.bytes.write(to: directory.appendingPathComponent(fixture.name)) }
+        let unsupported = directory.appendingPathComponent("unsupported-included-header")
+        try (padding + Data(".so early-header\n.Pp\nUnconditional inclusion does not permit dynamic markup.\n".utf8)).write(to: unsupported)
+        let scan = try await discoverLibrary(plan: DiscoveryPlan(roots: [directory], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [], traversalRoots: [directory]), previous: [], progress: { _ in })
+        XCTAssertFalse(scan.cancelled)
+        let issues = scan.coverage.flatMap(\.issues)
+        XCTAssertEqual(issues.map(\.path), [unsupported.path])
+        XCTAssertTrue(issues.allSatisfy { $0.kind == .unsupported && $0.reason.contains("unconditional static markup") }, "\(issues)")
+        let locations = scan.pages.flatMap(\.locations)
+        XCTAssertEqual(Set(locations.map { $0.source.lastPathComponent }), Set(fixtures.map { $0.name }))
+        let late = directory.appendingPathComponent("late-header")
+        let page = try XCTUnwrap(scan.pages.first { $0.locations.contains { $0.source == late } })
+        let location = try XCTUnwrap(page.locations.first { $0.source == late })
+        XCTAssertEqual(location.name, "launchctl")
+        XCTAssertEqual(location.section, "1")
+        let provenance = try XCTUnwrap(location.provenance)
+        XCTAssertEqual(provenance.dependencies.map(\.resolved), [late.resolvingSymlinksInPath()])
+        XCTAssertEqual(provenance.dependencies.first?.digest, manualContentDigest(extended))
+        let access = ManualSourceAccess(generation: UUID(), allowedNetworkRoots: [])
+        let input = try await manualInput(page: page.at(location), access: access)
+        XCTAssertEqual(input.bytes, extended)
+        let expected = try await formattedManualText(source: directory.appendingPathComponent("early-header"))
+        let rendered = try await formattedManualText(input: input)
+        XCTAssertTrue(expected.diagnostic.isEmpty)
+        XCTAssertTrue(rendered.diagnostic.isEmpty)
+        XCTAssertEqual(rendered.text, expected.text)
+        let spaced = directory.appendingPathComponent("late-spaced-header")
+        let spacedPage = try XCTUnwrap(scan.pages.first { $0.locations.contains { $0.source == spaced } })
+        let spacedLocation = try XCTUnwrap(spacedPage.locations.first { $0.source == spaced })
+        XCTAssertEqual(spacedLocation.name, "7")
+        XCTAssertEqual(spacedLocation.section, "1")
+        let spacedText = try await formattedManualText(source: spaced)
+        XCTAssertTrue(spacedText.diagnostic.isEmpty)
+        XCTAssertTrue(spacedText.text.contains("static title spacing witness"))
+        let included = directory.appendingPathComponent("late-included-header")
+        let includedPage = try XCTUnwrap(scan.pages.first { $0.locations.contains { $0.source == included } })
+        let includedLocation = try XCTUnwrap(includedPage.locations.first { $0.source == included })
+        XCTAssertEqual(includedLocation.provenance?.dependencies.map { $0.resolved.lastPathComponent },
+                       ["late-included-header", "included-source"])
+        let includedInput = try await manualInput(page: includedPage.at(includedLocation), access: access)
+        let includedText = try await formattedManualText(input: includedInput)
+        XCTAssertTrue(includedText.diagnostic.isEmpty)
+        XCTAssertTrue(includedText.text.contains("Owned late header inclusion marker."))
+    }
+
+    func testInactiveLateHeadersDoNotEstablishNonstandardManuals() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryInactiveHeader-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned inactive-header fixtures: \(error)") }
+        }
+        let padding = Data(String(repeating: ".\\\" padding\n", count: 8_192).utf8)
+        let endings: [(name: String, text: String)] = [
+            ("macro-definition", ".de UNUSED\n.TH FALSE 1\n..\nOrdinary text.\n"),
+            ("ignored-block", ".ig\n.TH FALSE 1\n..\nOrdinary text.\n"),
+            ("conditional-header", ".if 0 .TH FALSE 1\nOrdinary text.\n"),
+            ("continued-date", ".Dd 2026-11-09\\\n.Dt FALSE 1\nOrdinary text.\n"),
+            ("joined-date-comment", ".Dd 2026-11-09\\# ignored\n.Dt FALSE 1\nOrdinary text.\n"),
+            ("unicode-line-comment", ".\\\" ignored\u{2028}.TH FALSE 1\nOrdinary text.\n"),
+            ("unicode-paragraph-comment", ".\\\" ignored\u{2029}.TH FALSE 1\nOrdinary text.\n"),
+            ("unicode-next-line-comment", ".\\\" ignored\u{0085}.TH FALSE 1\nOrdinary text.\n"),
+            ("changed-control", ".cc !\n.TH FALSE 1\nOrdinary text.\n"),
+            ("changed-escape", ".ec @\n.TH FALSE 1\nOrdinary text.\n"),
+            ("late-title-after-text", "Ordinary notes.\n.TH FALSE 1\n"),
+            ("comment-only", ".\\\" .TH FALSE 1\n")
+        ]
+        for ending in endings { try (padding + Data(ending.text.utf8)).write(to: directory.appendingPathComponent(ending.name)) }
+        try Data("Ordinary numbered notes.\n".utf8).write(to: directory.appendingPathComponent("notes.1"))
+        let scan = try await discoverLibrary(plan: DiscoveryPlan(roots: [directory], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [], traversalRoots: [directory]), previous: [], progress: { _ in })
+        XCTAssertFalse(scan.cancelled)
+        XCTAssertTrue(scan.pages.isEmpty, "Inactive or missing title requests must not establish manual metadata.")
+    }
+
+    func testLateCommentAliasesStillRejectTargetsOutsideSelectedRoots() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("DiscoveryLateHeaderScope-\(UUID().uuidString)")
+        let selected = directory.appendingPathComponent("selected")
+        try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { XCTFail("Cannot remove owned late-header scope fixtures: \(error)") }
+        }
+        let outside = directory.appendingPathComponent("outside.1")
+        let original = try Data(contentsOf: URL(fileURLWithPath: "/usr/share/man/man1/launchctl.1"))
+        try original.write(to: outside)
+        let padding = Data(String(repeating: ".\\\" padding\n", count: 8_192).utf8)
+        let earlyAlias = selected.appendingPathComponent("early-alias.1")
+        let lateAlias = selected.appendingPathComponent("late-alias")
+        try Data(".so ../outside.1\n".utf8).write(to: earlyAlias)
+        try (padding + Data(".so ../outside.1\n".utf8)).write(to: lateAlias)
+        let scan = try await discoverLibrary(plan: DiscoveryPlan(roots: [selected], allowedNetworkRoots: [], exclusions: [],
+            traversalExclusions: [], traversalRoots: [selected]), previous: [], progress: { _ in })
+        XCTAssertFalse(scan.cancelled)
+        XCTAssertTrue(scan.pages.isEmpty)
+        let issues = scan.coverage.flatMap(\.issues)
+        XCTAssertEqual(Set(issues.map(\.path)), [earlyAlias.path, lateAlias.path])
+        XCTAssertTrue(issues.allSatisfy { $0.kind == .excluded && $0.reason.contains("leaves the selected scan roots") })
+        XCTAssertEqual(try Data(contentsOf: outside), original)
+    }
+
     func testFailedAtomicCompanionPreservesForeignReplacement() throws {
         try verifyFailedAtomicDestinationPreservation(previous: Data("previous companion".utf8))
     }
