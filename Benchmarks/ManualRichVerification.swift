@@ -340,9 +340,8 @@ func manualRichVerificationOutput(root: URL, inventory: URL, index: URL, output:
             }
             break
         }
-        let next = ancestor.deletingLastPathComponent()
-        if next == ancestor { break }
-        ancestor = next
+        if ancestor.path == "/" { break }
+        ancestor = ancestor.deletingLastPathComponent()
     }
     return ManualRichVerificationOutput(url: destination, parentDevice: parentState.st_dev, parentInode: parentState.st_ino)
 }
