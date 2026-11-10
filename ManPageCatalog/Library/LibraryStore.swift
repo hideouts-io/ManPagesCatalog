@@ -432,32 +432,11 @@ final class LibraryStore: ObservableObject {
         var exports: [CoverageExport] = []
         do {
             for report in reports { exports.append(try prepareCoverageExport(destination: report.destination, bytes: report.bytes)) }
-            try validateCoverageExportParents(exports)
         } catch {
             let cleanup = exports.flatMap(closeCoverageExport)
             throw ManualToolError(message: "Cannot prepare coverage export to \(url.path) and \(companion.path): \(error.localizedDescription) Neither output file was changed. Prepared recovery files remain at \(exports.map { $0.recoveryURL.path }.joined(separator: ", ")). \(cleanup.joined(separator: " "))")
         }
-        var attemptedIndex = 0
-        var published: [Int] = []
-        do {
-            for (index, export) in exports.enumerated() {
-                attemptedIndex = index
-                try publishCoverageExport(export)
-                published.append(index)
-            }
-        } catch {
-            try restoreCoverageExport(exports: exports, failedIndex: attemptedIndex,
-                                      publishedIndices: published, writeFailure: error)
-        }
-        var cleanup: [String] = []
-        for export in exports {
-            do { try removePreparedCoverageExport(export) }
-            catch { cleanup.append(error.localizedDescription) }
-            cleanup.append(contentsOf: closeCoverageExport(export))
-        }
-        if !cleanup.isEmpty {
-            throw ManualToolError(message: "Both coverage outputs were saved, but recovery-file cleanup failed: \(cleanup.joined(separator: " "))")
-        }
+        try publishCoverageExports(exports)
     }
 
     private func beginPerformanceSampling(recorder: ScanPerformanceRecorder, request: UUID) {
@@ -750,6 +729,19 @@ struct CoverageExport {
     let recoveryURL: URL
     let replacement: CoverageExportFile
     let original: CoverageExportFile?
+    let expectedDestination: CoverageExportFile?
+}
+
+/// A successful syscall receipt is recorded before inspecting an entry displaced by atomic exchange.
+enum CoverageExportPublication {
+    case created(CoverageExport)
+    case exchanged(CoverageExport, expected: CoverageExportFile)
+
+    var prepared: CoverageExport {
+        switch self {
+        case .created(let export), .exchanged(let export, _): return export
+        }
+    }
 }
 
 private let maximumCoverageBackupBytes: Int = 64 * 1024 * 1024
@@ -809,7 +801,7 @@ func prepareCoverageExport(destination: URL, bytes: Data) throws -> CoverageExpo
         } else { backup = nil }
         let replacement = try createCoverageExportFile(directory: descriptor, name: "replacement", bytes: bytes, location: recoveryURL)
         return CoverageExport(destination: destination, parent: parent, recovery: handle,
-                              recoveryURL: recoveryURL, replacement: replacement, original: backup)
+                              recoveryURL: recoveryURL, replacement: replacement, original: backup, expectedDestination: original)
     } catch {
         var details: [String] = []
         if let recovery {
@@ -839,31 +831,92 @@ private func createCoverageExportFile(directory: Int32, name: String, bytes: Dat
     }
 }
 
-/// Publication replaces one pathname atomically; the pair is not a crash-atomic transaction.
-func publishCoverageExport(_ export: CoverageExport) throws {
-    guard renameat(export.recovery.fileDescriptor, export.replacement.name,
-                   export.parent.fileDescriptor, export.destination.lastPathComponent) == 0 else {
-        throw coverageExportError(operation: "publish coverage output", destination: export.destination, code: errno)
+/// Record each successful publication before validation; failures restore the actual retained entry.
+func publishCoverageExports(_ exports: [CoverageExport]) throws {
+    do { try validateCoverageExportParents(exports) }
+    catch {
+        let cleanup = exports.flatMap(closeCoverageExport)
+        throw ManualToolError(message: "Cannot prepare coverage publication: \(error.localizedDescription) Prepared recovery files remain at \(exports.map { $0.recoveryURL.path }.joined(separator: ", ")). \(cleanup.joined(separator: " "))")
+    }
+    var attemptedIndex = 0
+    var published: [CoverageExportPublication] = []
+    do {
+        for (index, export) in exports.enumerated() {
+            attemptedIndex = index
+            let publication = try publishCoverageExport(export)
+            published.append(publication)
+            try validatePublishedCoverageExport(publication)
+        }
+    } catch {
+        try restoreCoverageExport(exports: exports, failedIndex: attemptedIndex,
+                                  publications: published, writeFailure: error)
+    }
+    var cleanup: [String] = []
+    for publication in published {
+        do { try removePublishedCoverageExport(publication) }
+        catch { cleanup.append(error.localizedDescription) }
+        cleanup.append(contentsOf: closeCoverageExport(publication.prepared))
+    }
+    if !cleanup.isEmpty {
+        throw ManualToolError(message: "Both coverage outputs were saved, but recovery-file cleanup failed: \(cleanup.joined(separator: " "))")
     }
 }
 
-/// A failed rename never establishes ownership of its destination, so recovery must not mutate it.
+/// Return immediately after atomic publication; the pair has no crash-atomic transaction.
+func publishCoverageExport(_ export: CoverageExport) throws -> CoverageExportPublication {
+    let result: Int32
+    let publication: CoverageExportPublication
+    if let expected = export.expectedDestination {
+        publication = .exchanged(export, expected: expected)
+        result = renameatx_np(export.recovery.fileDescriptor, export.replacement.name,
+                             export.parent.fileDescriptor, export.destination.lastPathComponent, UInt32(RENAME_SWAP))
+    } else {
+        publication = .created(export)
+        result = renameatx_np(export.recovery.fileDescriptor, export.replacement.name,
+                             export.parent.fileDescriptor, export.destination.lastPathComponent, UInt32(RENAME_EXCL))
+    }
+    let failure = errno
+    guard result == 0 else {
+        throw coverageExportError(operation: "publish coverage output", destination: export.destination, code: failure)
+    }
+    return publication
+}
+
+func validatePublishedCoverageExport(_ publication: CoverageExportPublication) throws {
+    if case .exchanged(let export, let expected) = publication {
+        try validateDisplacedCoverageExport(export: export, expected: expected)
+    }
+}
+
+private func validateDisplacedCoverageExport(export: CoverageExport, expected: CoverageExportFile) throws {
+    let displaced = try coverageExportSnapshot(directory: export.recovery.fileDescriptor, name: export.replacement.name,
+        destination: export.recoveryURL.appendingPathComponent(export.replacement.name), maximumBytes: maximumCoverageBackupBytes)
+    guard displaced?.identity == expected.identity, displaced?.bytes == expected.bytes else {
+        throw ManualToolError(message: "Destination \(export.destination.path) changed after preparation. Retain recovery directory \(export.recoveryURL.path); recovery will not overwrite a newer writer.")
+    }
+}
+
+/// Failed syscalls never grant ownership; a failed post-publication validation still has a receipt.
 func restoreCoverageExport(exports: [CoverageExport], failedIndex: Int,
-                           publishedIndices: [Int], writeFailure: Error) throws -> Never {
+                           publications: [CoverageExportPublication], writeFailure: Error) throws -> Never {
     var details: [String] = []
     let failed = exports[failedIndex]
-    do {
-        let current = try coverageExportSnapshot(directory: failed.parent.fileDescriptor, name: failed.destination.lastPathComponent,
-                                                destination: failed.destination, maximumBytes: maximumCoverageBackupBytes)
-        if current?.bytes == failed.original?.bytes {
-            details.append("Failed atomic destination \(failed.destination.path) retains its previous bytes or absence; it was not rewritten.")
-        } else {
-            details.append("Failed atomic destination \(failed.destination.path) changed independently; it was not rewritten.")
-        }
-    } catch { details.append("Cannot inspect failed destination \(failed.destination.path): \(error.localizedDescription) It was not rewritten.") }
-    for index in publishedIndices.reversed() {
-        do { details.append(try restorePublishedCoverageExport(exports[index])) }
-        catch { details.append("Restoration failed at \(exports[index].destination.path): \(error.localizedDescription)") }
+    if publications.contains(where: { $0.prepared.destination == failed.destination }) {
+        details.append("Atomic publication at \(failed.destination.path) completed before validation failed; recovery will restore its retained entry when safe.")
+    } else {
+        do {
+            let current = try coverageExportSnapshot(directory: failed.parent.fileDescriptor, name: failed.destination.lastPathComponent,
+                                                    destination: failed.destination, maximumBytes: maximumCoverageBackupBytes)
+            if current?.bytes == failed.original?.bytes {
+                details.append("Failed atomic destination \(failed.destination.path) retains its previous bytes or absence; it was not rewritten.")
+            } else {
+                details.append("Failed atomic destination \(failed.destination.path) changed independently; it was not rewritten.")
+            }
+        } catch { details.append("Cannot inspect failed destination \(failed.destination.path): \(error.localizedDescription) It was not rewritten.") }
+    }
+    for publication in publications.reversed() {
+        do { details.append(try restorePublishedCoverageExport(publication)) }
+        catch { details.append("Restoration failed at \(publication.prepared.destination.path): \(error.localizedDescription)") }
     }
     for index in exports.indices where index > failedIndex { details.append("Not written: \(exports[index].destination.path).") }
     details.append("Retain recovery files at \(exports.map { $0.recoveryURL.path }.joined(separator: ", ")).")
@@ -871,25 +924,28 @@ func restoreCoverageExport(exports: [CoverageExport], failedIndex: Int,
     throw ManualToolError(message: "Coverage export failed while writing \(failed.destination.path): \(writeFailure.localizedDescription) \(details.joined(separator: " "))")
 }
 
-func restorePublishedCoverageExport(_ export: CoverageExport) throws -> String {
+func restorePublishedCoverageExport(_ publication: CoverageExportPublication) throws -> String {
+    let export = publication.prepared
     let current = try coverageExportSnapshot(directory: export.parent.fileDescriptor, name: export.destination.lastPathComponent,
                                             destination: export.destination, maximumBytes: max(maximumCoverageBackupBytes, export.replacement.bytes.count))
     guard current?.identity == export.replacement.identity, current?.bytes == export.replacement.bytes else {
-        throw ManualToolError(message: "Destination changed after publication and was not rewritten. Prior bytes remain at \(export.recoveryURL.path).")
+        throw ManualToolError(message: "Destination changed after publication and was not rewritten. Retain recovery directory \(export.recoveryURL.path).")
     }
     try capturePublishedCoverageExport(export)
-    return try restoreCapturedCoverageExport(export)
+    return try restoreCapturedCoverageExport(publication)
 }
 
 /// Exclusive capture preserves the actual entry even if it changed after the preceding observation.
 func capturePublishedCoverageExport(_ export: CoverageExport) throws {
     guard renameatx_np(export.parent.fileDescriptor, export.destination.lastPathComponent,
                       export.recovery.fileDescriptor, "captured", UInt32(RENAME_EXCL)) == 0 else {
-        throw coverageExportError(operation: "capture published output; prior bytes remain at \(export.recoveryURL.path)", destination: export.destination, code: errno)
+        let failure = errno
+        throw coverageExportError(operation: "capture published output; retain recovery directory \(export.recoveryURL.path)", destination: export.destination, code: failure)
     }
 }
 
-func restoreCapturedCoverageExport(_ export: CoverageExport) throws -> String {
+func restoreCapturedCoverageExport(_ publication: CoverageExportPublication) throws -> String {
+    let export = publication.prepared
     let capturedURL = export.recoveryURL.appendingPathComponent("captured")
     let captured: CoverageExportFile?
     do {
@@ -903,12 +959,13 @@ func restoreCapturedCoverageExport(_ export: CoverageExport) throws -> String {
     guard captured?.identity == export.replacement.identity, captured?.bytes == export.replacement.bytes else {
         throw ManualToolError(message: "Destination changed during capture. \(returnCapturedCoverageExport(export))")
     }
-    if let original = export.original {
-        guard renameatx_np(export.recovery.fileDescriptor, original.name,
+    if case .exchanged = publication {
+        guard renameatx_np(export.recovery.fileDescriptor, export.replacement.name,
                           export.parent.fileDescriptor, export.destination.lastPathComponent, UInt32(RENAME_EXCL)) == 0 else {
-            throw coverageExportError(operation: "restore original exclusively; original and captured bytes remain at \(export.recoveryURL.path)", destination: export.destination, code: errno)
+            let failure = errno
+            throw coverageExportError(operation: "restore displaced entry exclusively; retain recovery directory \(export.recoveryURL.path)", destination: export.destination, code: failure)
         }
-        return "Restored previous bytes at \(export.destination.path). Captured export retained at \(capturedURL.path)."
+        return "Restored the displaced entry at \(export.destination.path). Captured export retained at \(capturedURL.path); retain recovery directory \(export.recoveryURL.path)."
     }
     var metadata = stat()
     guard fstatat(export.parent.fileDescriptor, export.destination.lastPathComponent, &metadata, AT_SYMLINK_NOFOLLOW) != 0 else {
@@ -921,10 +978,10 @@ func restoreCapturedCoverageExport(_ export: CoverageExport) throws -> String {
 private func returnCapturedCoverageExport(_ export: CoverageExport) -> String {
     if renameatx_np(export.recovery.fileDescriptor, "captured", export.parent.fileDescriptor,
                     export.destination.lastPathComponent, UInt32(RENAME_EXCL)) == 0 {
-        return "Captured entry returned without overwriting another pathname; original backup remains at \(export.recoveryURL.path)."
+        return "Captured entry returned without overwriting another pathname; recovery directory retained at \(export.recoveryURL.path)."
     }
     let failure = errno
-    return "Captured entry and original backup retained at \(export.recoveryURL.path); exclusive return failed with \(String(cString: strerror(failure))) (errno \(failure))."
+    return "Captured entry retained at \(export.recoveryURL.path); exclusive return failed with \(String(cString: strerror(failure))) (errno \(failure))."
 }
 
 func closeCoverageExport(_ export: CoverageExport) -> [String] {
@@ -934,14 +991,23 @@ func closeCoverageExport(_ export: CoverageExport) -> [String] {
     return failures
 }
 
-func removePreparedCoverageExport(_ export: CoverageExport) throws {
-    if let original = export.original {
+func removePublishedCoverageExport(_ publication: CoverageExportPublication) throws {
+    let export = publication.prepared
+    try validateCoverageExportRecoveryDirectory(export)
+    if case .exchanged(_, let expected) = publication {
+        guard let original = export.original else {
+            throw ManualToolError(message: "An exchanged coverage output has no prepared original backup; retain \(export.recoveryURL.path).")
+        }
+        try validateDisplacedCoverageExport(export: export, expected: expected)
         let saved = try coverageExportSnapshot(directory: export.recovery.fileDescriptor, name: original.name,
                                               destination: export.recoveryURL.appendingPathComponent(original.name), maximumBytes: maximumCoverageBackupBytes)
         guard saved?.identity == original.identity, saved?.bytes == original.bytes else {
             throw ManualToolError(message: "Private original backup changed; retain \(export.recoveryURL.path).")
         }
         try validateCoverageExportRecoveryDirectory(export)
+        guard unlinkat(export.recovery.fileDescriptor, export.replacement.name, 0) == 0 else {
+            throw coverageExportError(operation: "remove verified displaced original", destination: export.recoveryURL, code: errno)
+        }
         guard unlinkat(export.recovery.fileDescriptor, original.name, 0) == 0 else {
             throw coverageExportError(operation: "remove completed private backup", destination: export.recoveryURL, code: errno)
         }
